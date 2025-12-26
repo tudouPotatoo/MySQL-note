@@ -351,3 +351,405 @@ InnoDB、MyISAM、Memory
     
     mysql>
     ```
+
+
+
+# 2. MySQL的启动选项&系统变量&状态变量
+
+启动选项：启动MySQL程序时指定的设置项称为启动选项，这些选项控制着程序启动后的行为。
+
+系统变量：指的是MySQL运行过程中会用到的影响程序行为的变量，例如允许同时接入的客户端数量、默认的存储引擎。大部分系统变量可以通过启动选项传入，部分系统变量是程序运行过程中自动生成的，例如timestamp系统变量，代表当前时间戳，这个是MySQL运行过程中自动生成的，无法通过启动选项传入。
+
+状态变量：MySQL运行过程中维护的和程序运行状态相关的变量，以便于我们更好地了解程序的运行情况，例如当前和服务器建立连接的客户端的数量。
+
+
+
+类比：
+
+在游戏中，你可以配置你要携带的武器，你的坐骑，你的服装。你所配置的这些东西在游戏开始时会生效，影响着你的攻击力、攻击方式、速度、行为等。因此你的武器、坐骑、服装，都属于系统变量，因为这些值都影响着你在游戏的表现。而这些系统变量，你可以在游戏开始之前配置（启动选项），也可以在游戏中途暂停进行配置。在游戏的过程中，你会有精力值、血条，这些并不是你能主动控制的值，而是游戏系统计算出来代表你当前角色状况的变量，这些就叫做状态变量。
+
+## 2.1 如何配置启动选项
+
+### 命令行方式
+
+**启动MySQL程序时**，可以通过命令行设置启动选项。
+
+其格式为
+
+```css
+可执行文件名 --启动选项1[=值1] --启动选项2[=值2] ... --启动选项n[=值n]
+```
+
+示例：
+
+* 禁止MySQL服务器通过TCP/IP方式和客户端进行通信
+
+  ```css
+  mysqld --skip-networking
+  # 或
+  mysqld --skip_networking
+  ```
+
+  
+
+* 修改默认使用的存储引擎
+
+  ```css
+  mysqld --default-storage-engine=MyISAM
+  ```
+
+  
+
+==注意事项：==
+
+* 通过命令行设置的启动选项只对当次启动生效。
+
+* 为方便，很多启动选项不仅有长形式也具有短形式，例如以下列出的一些：
+
+  | 长形式       | 短形式 | 含义     |
+  | ------------ | ------ | -------- |
+  | `--host`     | `-h`   | 主机名   |
+  | `--user`     | `-u`   | 用户名   |
+  | `--password` | `-p`   | 密码     |
+  | `--port`     | `-P`   | 端口     |
+  | `--version`  | `-V`   | 版本信息 |
+
+* 如果选项名是长形式，则前面加`--`，如果选项名由多个单词构成的，它们之间可以由短划线`-`连接起来，也可以使用下划线`_`连接起来，例如`--skip-networking`和`--skip_networking`是等价的；
+
+  短形式选项名前仅需要一个 `-` 前缀；
+
+* 长形式指定启动选项时，选项名、=、选项值之间不可以有空白字符，例如`--default-storage-engine = MyISAM`是错误的；
+
+  短形式指定启动选项时，选项名和选项值之间可以没有间隙，或者用空白字符隔开（`-p`选项有些特殊，`-p`和密码值之间不能有空白字符）。例如`mysqld -P3307`和`mysqld -P 3307`等价；
+
+* 每个MySQL程序都提供`--help`选项以查看程序支持的所有启动选项及其默认值。例如`mysql --help`、`mysqld_safe --help`，只有mysqld比较特殊`mysqld --verbose -help`；
+
+* 选项名是区分大小写的，比如`-p`和`-P`选项拥有完全不同的含义；
+
+
+
+### 配置文件方式
+
+**1. 配置文件在哪**
+
+以下路径任何一个都可以当作配置文件。
+
+* windows
+
+  | 路径名                                | 备注                         |
+  | ------------------------------------- | ---------------------------- |
+  | `%WINDIR%\my.ini`， `%WINDIR%\my.cnf` |                              |
+  | `C:\my.ini`， `C:\my.cnf`             |                              |
+  | `BASEDIR\my.ini`， `BASEDIR\my.cnf`   |                              |
+  | `defaults-extra-file`                 | 命令行指定的额外配置文件路径 |
+  | `%APPDATA%\MySQL\.mylogin.cnf`        | 登录路径选项（仅限客户端）   |
+
+* 类unix
+
+  | 路径名                | 备注                                 |
+  | --------------------- | ------------------------------------ |
+  | `/etc/my.cnf`         |                                      |
+  | `/etc/mysql/my.cnf`   |                                      |
+  | `SYSCONFDIR/my.cnf`   |                                      |
+  | `$MYSQL_HOME/my.cnf`  | 特定于服务器的选项（仅限服务器）     |
+  | `defaults-extra-file` | 命令行指定的额外配置文件路径         |
+  | `~/.my.cnf`           | 用户特定选项                         |
+  | `~/.mylogin.cnf`      | 用户特定的登录路径选项（仅限客户端） |
+
+
+
+**2. 配置文件的内容**
+
+```css
+[server]
+(具体的启动选项...)
+option1     #这是option1，该选项不需要选项值
+option2 = value2      #这是option2，该选项需要选项值
+
+[mysqld]
+(具体的启动选项...)
+
+[mysqld_safe]
+(具体的启动选项...)
+
+[client]
+(具体的启动选项...)
+
+[mysql]
+(具体的启动选项...)
+
+[mysqladmin]
+(具体的启动选项...)
+```
+
+* 配置文件中定义了多个组，每个组下面可以定义该组的启动选项。
+
+  例如[mysqld]组定义的启动选项应用于mysqld服务器程序
+
+  例如[mysql]组定义的启动选项应用于mysql客户端程序
+
+* 用于启动服务端的程序都会读取[server]组的配置
+
+  用于启动客户端的程序都会读取[client]组的配置
+
+  各个启动命令及其能够读取的组信息如下：
+
+  | 启动命令       | 类别       | 能读取的组                               |
+  | -------------- | ---------- | ---------------------------------------- |
+  | `mysqld`       | 启动服务器 | `[mysqld]`、`[server]`                   |
+  | `mysqld_safe`  | 启动服务器 | `[mysqld]`、`[server]`、`[mysqld_safe]`  |
+  | `mysql.server` | 启动服务器 | `[mysqld]`、`[server]`、`[mysql.server]` |
+  | `mysql`        | 启动客户端 | `[mysql]`、`[client]`                    |
+  | `mysqladmin`   | 启动客户端 | `[mysqladmin]`、`[client]`               |
+  | `mysqldump`    | 启动客户端 | `[mysqldump]`、`[client]`                |
+
+  例如配置文件内容如下：
+
+  ```ini
+  [server]
+  skip-networking
+  default-storage-engine=MyISAM
+  ```
+
+  使用`mysqld`命令启动服务器程序
+
+  则最终`skip-networking`和`default-storage-engine=MyISAM`这两个选项会生效。
+
+* 配置文件中只能使用启动选项的长形式
+* 启动选项不允许加`--`前缀
+* 每行只指定一个选项
+* `=`周围可以有空白字符
+* 可以使用`#`来添加注释
+
+
+
+**3. 配置文件优先级**
+
+* 若多个配置文件配置了相同的启动选项，以最后一个文件为准
+
+  MySQL会以上面表中配置文件的顺序来扫描各个配置文件。如果在多个配置文件中设置了相同的启动选项，那以最后一个配置文件中的为准。
+
+  比方说`/etc/my.cnf`文件的内容是这样的：
+
+  ```ini
+  [server]
+  default-storage-engine=InnoDB
+  ```
+
+  而`~/.my.cnf`文件中的内容是这样的：
+
+  ```ini
+  [server]
+  default-storage-engine=MyISAM
+  ```
+
+  因为`~/.my.cnf`比`/etc/my.cnf`顺序靠后，所以以`~/.my.cnf`中的为准，所以`MySQL`服务器程序启动之后，`default-storage-engine`的值就是`MyISAM`。
+
+
+
+* 同一个配置文件中多个组配置了相同的启动选项，以最后一个组的为准
+
+  我们知道同一个启动命令可以访问配置文件中的多个组，比如`mysqld`可以访问`[mysqld]`、`[server]`组。
+
+  如果在同一个配置文件中，多个组出现了同样的配置项，比如这样：
+
+  ```ini
+  [server]
+  default-storage-engine=InnoDB
+  
+  [mysqld]
+  default-storage-engine=MyISAM
+  ```
+
+  那么，将以最后一个出现的组中的启动选项为准，例子中`default-storage-engine`既出现在`[mysqld]`组也出现在`[server]`组，因为`[mysqld]`组在`[server]`组后边，就以`[mysqld]`组中的配置项为准。
+
+  
+
+==注意事项==：
+
+* 通过配置文件设置的启动选项是长久生效的。
+* 如果同一个启动选项既出现在命令行中，又出现在配置文件中，那么以命令行中的启动选项为准。
+
+
+
+## 2.2 系统变量
+
+每个系统变量都有默认值，大多数系统变量可以在程序启动时通过启动选项设置，也可以在程序运行过程中修改。
+
+### 系统变量的作用范围
+
+* `GLOBAL`：全局变量。
+* `SESSION` / `LOCAL`：会话变量，作用范围为单个客户端。
+
+==注意事项：==
+
+- 并不是所有系统变量都具有`GLOBAL`和`SESSION`的作用范围。
+  - 有一些系统变量只具有`GLOBAL`作用范围，比方说`max_connections`，表示服务器程序支持同时最多有多少个客户端程序进行连接。
+  - 有一些系统变量只具有`SESSION`作用范围，比如`insert_id`，表示在对某个包含`AUTO_INCREMENT`列的表进行插入时，该列初始的值。
+  - 有一些系统变量的值既具有`GLOBAL`作用范围，也具有`SESSION`作用范围，比如我们前边用到的`default_storage_engine`，而且其实大部分的系统变量都是这样的，
+
+
+
+### 设置系统变量
+
+通过启动选项设置，见2.1。
+
+启动选项设置的系统变量的作用范围都是`GLOBAL`的，也就是对所有客户端都有效的。
+
+
+
+### 修改系统变量
+
+```ini
+SET [GLOBAL|SESSION] 系统变量名 = 值;
+# 或
+SET [@@(GLOBAL|SESSION).]var_name = XXX;
+```
+
+比如我们想在服务器运行过程中把作用范围为`GLOBAL`的系统变量`default_storage_engine`的值修改为`MyISAM`，也就是想让之后新连接到服务器的客户端都用`MyISAM`作为默认的存储引擎。
+
+设置：
+
+```ini
+语句一：SET GLOBAL default_storage_engine = MyISAM;
+语句二：SET @@GLOBAL.default_storage_engine = MyISAM;
+```
+
+如果只想对本客户端生效，也可以选择下边三条语句中的任意一条来进行设置：
+
+```ini
+语句一：SET SESSION default_storage_engine = MyISAM;
+语句二：SET @@SESSION.default_storage_engine = MyISAM;
+语句三：SET default_storage_engine = MyISAM;
+```
+
+从上边的`语句三`也可以看出，如果在设置系统变量的语句中省略了作用范围，默认的作用范围就是`SESSION`。也就是说`SET 系统变量名 = 值`和`SET SESSION 系统变量名 = 值`是等价的。
+
+
+
+==注意事项：==
+
+* 如果某个客户端改变了某个系统变量在`GLOBAL`作用范围的值，并不会影响该系统变量在当前已经连接的客户端作用范围为`SESSION`的值，只会影响后续连入的客户端在作用范围为`SESSION`的值。
+
+* 如果我当前session使用的存储引擎是innodb，运行一段时间后修改为MyISAM，那已有的表的结构会发生改变吗，还是只会影响新创建的表的行为？
+
+  简单直接的回答是：**已有表的结构完全不会发生改变，只会影响之后新创建的表的行为。**
+
+  我们可以把 `default_storage_engine` 这个系统变量理解为**“新建表的模版选项”**。修改它，只是换了一套新的默认模版，并不会去回溯修改已经盖好的“房子”。
+
+- 有些系统变量是只读的，并不能设置值。
+
+  比方说`version`，表示当前`MySQL`的版本，我们客户端是不能设置它的值的，只能在`SHOW VARIABLES`语句里查看。
+
+
+
+### 查看系统变量
+
+**指定要查看某个作用范围的系统变量**
+
+命令：
+
+```sql
+SHOW [GLOBAL|SESSION] VARIABLES [LIKE 匹配的模式];
+```
+
+示例：
+
+```sql
+mysql> SHOW SESSION VARIABLES LIKE 'default_storage_engine';
++------------------------+--------+
+| Variable_name          | Value  |
++------------------------+--------+
+| default_storage_engine | InnoDB |
++------------------------+--------+
+1 row in set (0.00 sec)
+
+mysql> SHOW GLOBAL VARIABLES LIKE 'default_storage_engine';
++------------------------+--------+
+| Variable_name          | Value  |
++------------------------+--------+
+| default_storage_engine | InnoDB |
++------------------------+--------+
+1 row in set (0.00 sec)
+
+mysql> SET SESSION default_storage_engine = MyISAM;
+Query OK, 0 rows affected (0.00 sec)
+
+mysql> SHOW SESSION VARIABLES LIKE 'default_storage_engine';
++------------------------+--------+
+| Variable_name          | Value  |
++------------------------+--------+
+| default_storage_engine | MyISAM |
++------------------------+--------+
+1 row in set (0.00 sec)
+
+mysql> SHOW GLOBAL VARIABLES LIKE 'default_storage_engine';
++------------------------+--------+
+| Variable_name          | Value  |
++------------------------+--------+
+| default_storage_engine | InnoDB |
++------------------------+--------+
+1 row in set (0.00 sec)
+
+mysql>
+
+```
+
+
+
+**不指定作用范围，默认是查看SESSION作用范围的系统变量**
+
+```sql
+SHOW VARIABLES [LIKE 匹配的模式];
+```
+
+例子
+
+```sql
+mysql> SHOW VARIABLES LIKE 'default%';
++-------------------------------+-----------------------+
+| Variable_name                 | Value                 |
++-------------------------------+-----------------------+
+| default_authentication_plugin | mysql_native_password |
+| default_password_lifetime     | 0                     |
+| default_storage_engine        | InnoDB                |
+| default_tmp_storage_engine    | InnoDB                |
+| default_week_format           | 0                     |
++-------------------------------+-----------------------+
+5 rows in set (0.01 sec)
+
+mysql>
+```
+
+
+
+
+
+## 2.3 状态变量
+
+由于`状态变量`是用来显示服务器程序运行状况的，所以它们的值只能由服务器程序自己来设置，程序员是不能设置的。
+
+`状态变量`也有`GLOBAL`和`SESSION`两个作用范围，查看`状态变量`的语句如下：
+
+```ini
+SHOW [GLOBAL|SESSION] STATUS [LIKE 匹配的模式];
+```
+
+类似的，如果我们不写作用范围，默认的作用范围是`SESSION`，比方说这样：
+
+```sql
+mysql> SHOW STATUS LIKE 'thread%';
++-------------------+-------+
+| Variable_name     | Value |
++-------------------+-------+
+| Threads_cached    | 0     |
+| Threads_connected | 1     |
+| Threads_created   | 1     |
+| Threads_running   | 1     |
++-------------------+-------+
+4 rows in set (0.00 sec)
+
+mysql>
+```
+
+所有以`Thread`开头的`SESSION`作用范围的状态变量就都被展示出来了。
