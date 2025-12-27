@@ -516,9 +516,13 @@ option2 = value2      #这是option2，该选项需要选项值
   则最终`skip-networking`和`default-storage-engine=MyISAM`这两个选项会生效。
 
 * 配置文件中只能使用启动选项的长形式
+
 * 启动选项不允许加`--`前缀
+
 * 每行只指定一个选项
+
 * `=`周围可以有空白字符
+
 * 可以使用`#`来添加注释
 
 
@@ -753,3 +757,505 @@ mysql>
 ```
 
 所有以`Thread`开头的`SESSION`作用范围的状态变量就都被展示出来了。
+
+
+
+# 3. 字符集 & 比较规则
+
+## 3.1 字符集
+
+### 是什么
+
+我们知道计算机只能存储二进制数据，那如何存储字符呢？就是通过建立字符和二进制数据的映射关系，要建立这种映射关系，需要确定两件事：
+
+1. 给哪些字符建立映射关系
+
+   即确定字符的范围
+
+2. 如何建立映射关系
+
+   将一个字符映射为二进制数据的过程，称为编码。
+
+   将一个二进制数据映射为字符的过程，称为解码。
+
+
+
+>题外话
+>
+>既然计算机只能存储二进制数据，那是怎么在屏幕中显示出字符的样子？
+>
+>在 ASCII 中，大写字母 **'A'** 的编号是 `65`。分析一下怎么从硬盘的65转化为屏幕上的A。
+>
+>计算机从硬盘读到二进制数据 -> 计算得出数字为65 -> 字库中记录着每一个编号及其对应的形状描述（**点阵字体：** 像拼图一样，用一个个小方块（像素点）拼出形状。）-> 显卡驱动程序根据绘图指令，计算出屏幕上哪些像素点应该发光，哪些不发光。 -> 人眼看到A。
+
+
+
+人们抽象出一个`字符集`的概念来描述某个字符范围的编码规则。比方说我们来自定义一个名称为`xiaohaizi`的字符集，它包含的字符范围和编码规则如下：
+
+- 包含字符`'a'`、`'b'`、`'A'`、`'B'`。
+
+- 编码规则如下：
+
+  采用1个字节编码一个字符的形式，字符和字节的映射关系如下：
+
+  ```css
+  'a' -> 00000001 (十六进制：0x01)
+  'b' -> 00000010 (十六进制：0x02)
+  'A' -> 00000011 (十六进制：0x03)
+  'B' -> 00000100 (十六进制：0x04)
+  ```
+
+有了`xiaohaizi`字符集，我们就可以用二进制形式表示一些字符串了，下边是一些字符串用`xiaohaizi`字符集编码后的二进制表示：
+
+```css
+'bA' -> 00000010 00000011  (十六进制：0x0203)
+'baB' -> 00000010 00000001 00000100  (十六进制：0x020104)
+'cd' -> 无法表示，字符集xiaohaizi不包含字符'c'和'd'
+```
+
+
+
+### 常见的字符集
+
+* `ASCII`字符集
+
+  * 共收录128个字符，包括空格、标点符号、**数字**、**大小写字母**和一些不可见字符。
+
+  * 使用1个字节来进行编码。
+
+  * 我们看一些字符的编码方式：
+
+    ```css
+    'L' ->  01001100（十六进制：0x4C，十进制：76）
+    'M' ->  01001101（十六进制：0x4D，十进制：77）
+    ```
+
+* `ISO 8859-1`字符集（别名`latin1`）
+
+  * 共收录256个字符，是在`ASCII`字符集的基础上又扩充了128个西欧常用字符(包括德法两国的字母)
+  * 使用1个字节来进行编码。
+
+* `GB2312`字符集
+
+  * 收录了**汉字**以及拉丁字母、希腊字母、日文平假名及片假名字母、俄语西里尔字母。其中收录汉字6763个，其他文字符号682个。
+
+  * 兼容`ASCII`字符集，编码方式如下：
+
+    - 如果该字符在`ASCII`字符集中，则采用1字节编码。
+
+    - 否则采用2字节编码。
+
+    - 这种表示一个字符需要的字节数可能不同的编码方式称为`变长编码方式`。比方说字符串`'爱u'`，其中`'爱'`需要用2个字节进行编码，编码后的十六进制表示为`0xB0AE`，`'u'`需要用1个字节进行编码，编码后的十六进制表示为`0x75`，所以拼合起来就是`0xB0AE75`。
+
+    - 问题：怎么区分某个字节代表一个单独的字符还是代表某个字符的一部分呢？
+
+      首先，GB2312字符集保证，如果是单字节字符，最高位是0。如果是多字节字符，最高位是1。
+
+      第二，计算机解析GB2312文本流的时候，是从左往右解析的，它在读取到一个字节的时候，会先检查最高位是不是1，如果是1，则会直接认为是多字节字符，会连续读两个字节。如果不是1，就认为是单字节字符，只读一个字节。
+
+       所以，就算出现了多字节字符第二个字节值在范围在0-127之间，也没关系，因为它会根据第一个字节的最高位来确定第二个字节是多字节字符的第二个字节还是仅仅是单字节字符。
+
+* `GBK`字符集
+
+  * `GBK`字符集只是在收录字符范围上对`GB2312`字符集作了扩充，编码方式上兼容`GB2312`。
+
+* `utf8`字符集
+
+  * 收录地球上能想到的所有字符，而且还在不断扩充。这种字符集兼容`ASCII`字符集，采用变长编码方式，编码一个字符需要使用1～4个字节。
+
+  * 准确的说，utf8只是Unicode字符集的一种编码方案，Unicode字符集可以采用utf8、utf16、utf32这几种编码方案，utf8使用1～4个字节编码一个字符，utf16使用2个或4个字节编码一个字符，utf32使用4个字节编码一个字符。
+
+  * 由于常用的字符使用1-3个字节表示就足够了，MySQL为了性能考虑，定义了utfmb3和utfmb4：
+
+    * `utf8mb3`：阉割过的`utf8`字符集，只使用1～3个字节表示字符。
+    * `utf8mb4`：正宗的`utf8`字符集，使用1～4个字节表示字符。
+
+    在MySQL中`utf8`是`utf8mb3`的别名。
+
+
+
+## 3.2 比较规则
+
+是什么：我们一个字符集中可以有很多个字符，比较规则就是用来比较字符之间的大小的。
+
+作用：通常体现在比较字符串大小的表达式 & 对某个字符串列进行***排序***。
+
+> 在对字符串做比较或者对某个字符串列做排序操作时没有得到想象中的结果，可以思考一下是不是`比较规则`的问题
+
+
+
+## 3.3 MySQL支持的字符集 & 比较规则
+
+### 1️⃣查看当前MySQL支持的字符集
+
+```sql
+SHOW (CHARACTER SET|CHARSET) [LIKE 匹配的模式];
+```
+
+示例：
+
+* Charset列：表示字符集的名称。
+* Default collation列：表示这种字符集默认使用的`比较规则`。
+* MaxLen列：表示字符集表示一个字符最多需要几个字节。
+
+```sql
+mysql> SHOW CHARSET;
++----------+---------------------------------+---------------------+--------+
+| Charset  | Description                     | Default collation   | Maxlen |
++----------+---------------------------------+---------------------+--------+
+| big5     | Big5 Traditional Chinese        | big5_chinese_ci     |      2 |
+...
+| latin1   | cp1252 West European            | latin1_swedish_ci   |      1 |
+| latin2   | ISO 8859-2 Central European     | latin2_general_ci   |      1 |
+...
+| ascii    | US ASCII                        | ascii_general_ci    |      1 |
+...
+| gb2312   | GB2312 Simplified Chinese       | gb2312_chinese_ci   |      2 |
+...
+| gbk      | GBK Simplified Chinese          | gbk_chinese_ci      |      2 |
+| latin5   | ISO 8859-9 Turkish              | latin5_turkish_ci   |      1 |
+...
+| utf8     | UTF-8 Unicode                   | utf8_general_ci     |      3 |
+| ucs2     | UCS-2 Unicode                   | ucs2_general_ci     |      2 |
+...
+| latin7   | ISO 8859-13 Baltic              | latin7_general_ci   |      1 |
+| utf8mb4  | UTF-8 Unicode                   | utf8mb4_general_ci  |      4 |
+| utf16    | UTF-16 Unicode                  | utf16_general_ci    |      4 |
+| utf16le  | UTF-16LE Unicode                | utf16le_general_ci  |      4 |
+...
+| utf32    | UTF-32 Unicode                  | utf32_general_ci    |      4 |
+| binary   | Binary pseudo charset           | binary              |      1 |
+...
+| gb18030  | China National Standard GB18030 | gb18030_chinese_ci  |      4 |
++----------+---------------------------------+---------------------+--------+
+41 rows in set (0.01 sec)
+```
+
+
+
+### 2️⃣查看当前MySQL支持的比较规则
+
+```sql
+SHOW COLLATION [LIKE 匹配的模式];
+```
+
+示例：
+
+* Collation列：比较规则的名称。
+
+  * 比较规则名称以与其关联的字符集的名称开头
+
+  * 字符集名称后紧跟着作用的语言，比如`utf8_polish_ci`表示以波兰语的规则比较，`utf8_spanish_ci`是以西班牙语的规则比较，`utf8_general_ci`是一种通用的比较规则
+
+  * 名称后缀意味着该比较规则是否区分语言中的重音、大小写等，具体可以用的值如下：
+
+    | 后缀   | 英文释义             | 描述             |
+    | ------ | -------------------- | ---------------- |
+    | `_ai`  | `accent insensitive` | 不区分重音       |
+    | `_as`  | `accent sensitive`   | 区分重音         |
+    | `_ci`  | `case insensitive`   | 不区分大小写     |
+    | `_cs`  | `case sensitive`     | 区分大小写       |
+    | `_bin` | `binary`             | 以二进制方式比较 |
+
+    比如`utf8_general_ci`这个比较规则是以`ci`结尾的，说明不区分大小写。
+
+* Charset列：可以用于的字符集。
+
+* Default列：`Default`列的值为`YES`的就是该字符集的默认比较规则。因此utf8字符集默认的比较规则为utf8_general_ci。
+
+```sql
+mysql> SHOW COLLATION LIKE 'utf8\_%';
++--------------------------+---------+-----+---------+----------+---------+
+| Collation                | Charset | Id  | Default | Compiled | Sortlen |
++--------------------------+---------+-----+---------+----------+---------+
+| utf8_general_ci          | utf8    |  33 | Yes     | Yes      |       1 |
+| utf8_bin                 | utf8    |  83 |         | Yes      |       1 |
+| utf8_unicode_ci          | utf8    | 192 |         | Yes      |       8 |
+| utf8_icelandic_ci        | utf8    | 193 |         | Yes      |       8 |
+| utf8_latvian_ci          | utf8    | 194 |         | Yes      |       8 |
+| utf8_romanian_ci         | utf8    | 195 |         | Yes      |       8 |
+| utf8_slovenian_ci        | utf8    | 196 |         | Yes      |       8 |
+| utf8_polish_ci           | utf8    | 197 |         | Yes      |       8 |
+| utf8_estonian_ci         | utf8    | 198 |         | Yes      |       8 |
+| utf8_spanish_ci          | utf8    | 199 |         | Yes      |       8 |
+| utf8_swedish_ci          | utf8    | 200 |         | Yes      |       8 |
+| utf8_turkish_ci          | utf8    | 201 |         | Yes      |       8 |
+| utf8_czech_ci            | utf8    | 202 |         | Yes      |       8 |
+| utf8_danish_ci           | utf8    | 203 |         | Yes      |       8 |
+| utf8_lithuanian_ci       | utf8    | 204 |         | Yes      |       8 |
+| utf8_slovak_ci           | utf8    | 205 |         | Yes      |       8 |
+| utf8_spanish2_ci         | utf8    | 206 |         | Yes      |       8 |
+| utf8_roman_ci            | utf8    | 207 |         | Yes      |       8 |
+| utf8_persian_ci          | utf8    | 208 |         | Yes      |       8 |
+| utf8_esperanto_ci        | utf8    | 209 |         | Yes      |       8 |
+| utf8_hungarian_ci        | utf8    | 210 |         | Yes      |       8 |
+| utf8_sinhala_ci          | utf8    | 211 |         | Yes      |       8 |
+| utf8_german2_ci          | utf8    | 212 |         | Yes      |       8 |
+| utf8_croatian_ci         | utf8    | 213 |         | Yes      |       8 |
+| utf8_unicode_520_ci      | utf8    | 214 |         | Yes      |       8 |
+| utf8_vietnamese_ci       | utf8    | 215 |         | Yes      |       8 |
+| utf8_general_mysql500_ci | utf8    | 223 |         | Yes      |       1 |
++--------------------------+---------+-----+---------+----------+---------+
+27 rows in set (0.00 sec)
+```
+
+
+
+### 3️⃣MySQL各级别的字符集 & 比较规则
+
+`MySQL`有4个级别的字符集和比较规则，分别是：
+
+- 服务器级别
+- 数据库级别
+- 表级别
+- 列级别
+
+#### 服务器级别
+
+* `MySQL`提供了两个系统变量来表示服务器级别的字符集和比较规则：
+
+  | 系统变量               | 描述                 |
+  | ---------------------- | -------------------- |
+  | `character_set_server` | 服务器级别的字符集   |
+  | `collation_server`     | 服务器级别的比较规则 |
+
+  查看这两个系统变量的值：
+
+  ```sql
+  mysql> SHOW VARIABLES LIKE 'character_set_server';
+  +----------------------+-------+
+  | Variable_name        | Value |
+  +----------------------+-------+
+  | character_set_server | utf8  |
+  +----------------------+-------+
+  1 row in set (0.00 sec)
+  
+  mysql> SHOW VARIABLES LIKE 'collation_server';
+  +------------------+-----------------+
+  | Variable_name    | Value           |
+  +------------------+-----------------+
+  | collation_server | utf8_general_ci |
+  +------------------+-----------------+
+  1 row in set (0.00 sec)
+  ```
+
+  可以通过启动选项/配置文件/程序运行过程中用SET语句来修改这些变量的值。
+
+
+
+#### 数据库级别
+
+* 如果不显式指定，将使用服务器级别的字符集和比较规则作为数据库的字符集和比较规则。
+
+* 数据库级别的字符集和比较规则对应的系统变量
+
+  | 系统变量                 | 描述                 |
+  | ------------------------ | -------------------- |
+  | `character_set_database` | 当前数据库的字符集   |
+  | `collation_database`     | 当前数据库的比较规则 |
+
+  查看这两个系统变量的值：
+
+  ```sql
+  mysql> USE charset_demo_db;
+  Database changed
+  
+  mysql> SHOW VARIABLES LIKE 'character_set_database';
+  +------------------------+--------+
+  | Variable_name          | Value  |
+  +------------------------+--------+
+  | character_set_database | gb2312 |
+  +------------------------+--------+
+  1 row in set (0.00 sec)
+  
+  mysql> SHOW VARIABLES LIKE 'collation_database';
+  +--------------------+-------------------+
+  | Variable_name      | Value             |
+  +--------------------+-------------------+
+  | collation_database | gb2312_chinese_ci |
+  +--------------------+-------------------+
+  1 row in set (0.00 sec)
+  
+  mysql>
+  ```
+
+  ***character_set_database*** 和 ***collation_database*** 这两个系统变量是只读的，我们不能通过修改这两个变量的值而改变当前数据库的字符集和比较规则。
+
+  
+
+* 创建数据库时指定字符集和比较规则
+
+  ```sql
+  CREATE DATABASE 数据库名
+      [[DEFAULT] CHARACTER SET 字符集名称]
+      [[DEFAULT] COLLATE 比较规则名称];
+  ```
+
+* 修改数据库的字符集和比较规则
+
+  ```sql
+  ALTER DATABASE 数据库名
+      [[DEFAULT] CHARACTER SET 字符集名称]
+      [[DEFAULT] COLLATE 比较规则名称];
+  ```
+
+​	
+
+#### 表级别
+
+* 如果创建表的语句中没有指明字符集和比较规则，将使用该表所在数据库的字符集和比较规则作为该表的字符集和比较规则。
+
+* 我们也可以在创建和修改表的时候指定表的字符集和比较规则，语法如下：
+
+  ```sql
+  CREATE TABLE 表名 (列的信息)
+      [[DEFAULT] CHARACTER SET 字符集名称]
+      [COLLATE 比较规则名称]]
+  
+  ALTER TABLE 表名
+      [[DEFAULT] CHARACTER SET 字符集名称]
+      [COLLATE 比较规则名称]
+  ```
+
+  
+
+#### 列级别
+
+* 对于某个列来说，如果在创建和修改的语句中没有指明字符集和比较规则，将使用该列所在表的字符集和比较规则作为该列的字符集和比较规则。
+
+* 对于存储字符串的列，同一个表中的不同的列也可以有不同的字符集和比较规则。我们在创建和修改列定义的时候可以指定该列的字符集和比较规则，语法如下：
+
+  ```sql
+  CREATE TABLE 表名(
+      列名 字符串类型 [CHARACTER SET 字符集名称] [COLLATE 比较规则名称],
+      其他列...
+  );
+  
+  ALTER TABLE 表名 MODIFY 列名 字符串类型 [CHARACTER SET 字符集名称] [COLLATE 比较规则名称];
+  ```
+
+* 在转换列的字符集时需要注意，如果转换前列中存储的数据不能用转换后的字符集进行表示会发生错误。比方说原先列使用的字符集是utf8，列中存储了一些汉字，现在把列的字符集转换为ascii的话就会出错，因为ascii字符集并不能表示汉字字符。
+
+
+
+==注意事项：==
+
+* 仅修改字符集或仅修改比较规则
+
+  由于字符集和比较规则是互相有联系的，如果我们只修改了字符集，比较规则也会跟着变化，如果只修改了比较规则，字符集也会跟着变化，具体规则如下：
+
+  - 只修改字符集，则比较规则将变为修改后的字符集默认的比较规则。
+
+  - 只修改比较规则，则字符集将变为修改后的比较规则对应的字符集。
+
+
+
+## 3.4 服务端 & 客户端通信过程使用的字符集
+
+### 为什么会出现乱码
+
+如果客户端用字符集A编码对字符进行编码，而服务端用字符集B对字符进行解码，最终效果就是会出现乱码。
+
+例如：
+
+`我` --- utf8编码 ---> `E68891`（十六进制）
+
+`E68891` --- GBK解码 ---> `鎴?`
+
+
+
+### MySQL服务端 & 客户端通信过程的字符集转换
+
+客户端发送请求给服务端，本质上是发了一个字符串给服务端，这个字符串也是通过二进制的方式编码之后传输到服务端的。
+
+在服务端，这个字符串需要经过经过多次字符集的转换，这会涉及三个服务端的系统变量：
+
+| 系统变量                   | 描述                                                         |
+| -------------------------- | ------------------------------------------------------------ |
+| `character_set_client`     | 服务器解码请求时使用的字符集                                 |
+| `character_set_connection` | 服务器处理请求时会把请求字符串从`character_set_client`转为`character_set_connection` |
+| `character_set_results`    | 服务器向客户端返回数据时使用的字符集                         |
+
+具体的转换过程如下：
+
+以客户端发送`SELECT * FROM t WHERE s = '我';`请求为例介绍
+
+1. 客户端将整个请求字符串进行编码，发送给服务端
+
+   客户端使用的字符集和客户端OS相关，如下：
+
+   - 类`Unix`系统使用的是`utf8`
+   - `Windows`使用的是`gbk`
+
+2. 服务端接收到二进制形式的请求，它会认为这个二进制字节采用的是character_set_client对应的字符集编码，因此服务端会以相同的字符集进行解码。
+
+   然后服务端会以character_set_connection字符集进行编码
+
+3. 如果s列使用的字符集和character_set_connection字符集不一致，则还需要转换为s列使用的字符集
+4. 查询到结果之后，会从s列使用的字符集解码，用character_set_results字符集编码发送给客户端
+5. 最后客户端再对结果进行解码
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/image-20251227205525372.png" alt="image-20251227205525372" style="zoom:50%;" />
+
+==注意事项：==
+
+* `character_set_client`、`character_set_connection`、`character_set_results`三个系统变量既有GLOBAL范围，也有SESSION范围。
+
+* `character_set_connection`包含的字符范围一定要 >= `character_set_client`包含的字符范围。
+
+  比如你把`character_set_connection`设置成`ascii`，把`character_set_client`设置为`utf8`，那么此时你如果从客户端发送一个汉字到服务器，那么服务器无法使用`ascii`字符集来编码这个汉字，就会向用户发出一个警告。
+
+* 为了避免进行过多无谓的转换，通常都把 `character_set_client`*** 、***`character_set_connection`、`character_set_results`这三个系统变量设置成和客户端使用的字符集一致的情况。
+
+  * 服务端设置
+
+    为了方便设置，`MySQL`提供了一条非常简便的语句：
+  
+    ```sql
+    SET NAMES 字符集名;
+    ```
+
+    这一条语句产生的效果和我们执行这3条的效果是一样的：
+  
+    ```sql
+    SET character_set_client = 字符集名;
+    SET character_set_connection = 字符集名;
+    SET character_set_results = 字符集名;
+    ```
+  
+  * 客户端设置
+  
+    如果你想在启动客户端的时候就把`character_set_client`、`character_set_connection`、`character_set_results`这三个系统变量的值设置成一样的，那我们可以在启动客户端的时候指定一个叫`default-character-set`的启动选项，比如在配置文件里可以这么写：
+  
+    ```sql
+    [client]
+    default-character-set=utf8
+    ```
+  
+    它起到的效果和执行一遍`SET NAMES utf8`是一样的，都会将那三个系统变量的值设置成`utf8`。
+
+* 为什么要拆成入口、处理、出口三个系统变量，而不是直接统一它们的值？
+
+  * ==***注意：这三个系统变量99%的情况下都可以统一，只有极端情况下才需要分开设置。***==
+
+  * 为什么character_set_client和character_set_results不能合并为一个？
+
+    举例：
+
+    入口：HR通过浏览器录入新员工信息，现代浏览器和网页前端都是 **UTF-8**，则网页把“张三”两个字通过UTF8编码发给了MySQL服务器存储。
+
+    出口：财务部门需要将所有员工的工资条导出一个 **CSV 文件**，然后在他们本地的 **旧版 Excel** 软件里打开。由于这个旧版的Excel软件不支持UTF编码，仅支持gbk。如果MySQL服务端直接返回UTF-8编码的员工信息内容，用该Excel打开会乱码。
+
+    因此需要财务的下载脚本在请求数据时，告诉数据库：`SET character_set_results = gbk`。这样MySQL返回的是gbk格式的数据，用Excel打开的时候才不会乱码。
+
+    因此入口和出口拆开是因为入口和出口支持的编码方式并不一定一致。
+
+  * 为什么character_set_client和character_set_connection不能合并为一个？
+
+    本质上会先从character_set_client转化为character_set_connection再转化为表/列使用的字符集
+
+    表/列使用的字符集可能和character_set_client是不同的，因此是需要转化的。
+
+    那为什么不能直接从character_set_client转化到表/列使用的字符集，而需要一个中间人character_set_connection？
+
+    我认为是为了便利于内部逻辑的计算。
