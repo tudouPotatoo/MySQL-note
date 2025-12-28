@@ -1259,3 +1259,472 @@ mysql> SHOW COLLATION LIKE 'utf8\_%';
     那为什么不能直接从character_set_client转化到表/列使用的字符集，而需要一个中间人character_set_connection？
 
     我认为是为了便利于内部逻辑的计算。
+
+
+
+# 4. InnoDB记录结构
+
+我们知道，存储引擎是真正负责数据的存储和读写工作的。
+
+MySQL服务器支持不同类型的存储引擎，例如InnoDB、MyISAM、Memory等，不同的存储引擎是为实现不同特性而开发的。
+
+数据在不同的存储引擎中存放的格式各不相同，由于InnoDB是MySQL默认存储引擎，也是被最广泛使用的存储引擎，因此本章介绍数据在InnoDB存储引擎的具体存储格式。
+
+## 4.1 行格式是什么
+
+记录在磁盘中存放的方式称为行格式 / 记录格式。
+
+InnoDB有四种可选的行格式，它们的原理大体是相同的：
+
+* Compact（MySQL 5.7.9之前默认行格式）
+* Redundant
+* Dynamic（MySQL 5.7.9及其之后的版本的默认行格式）
+* Compressed
+
+
+
+Compact和Dynamic大致原理相同，主要区别在于行溢出的处理方式，下面会介绍到。
+
+
+
+## 4.2 行格式相关SQL命令
+
+```sql
+# 创建表时指定行格式
+CREATE TABLE 表名 (列的信息) ROW_FORMAT=行格式名称
+# 修改表的行格式
+ALTER TABLE 表名 ROW_FORMAT=行格式名称
+```
+
+示例：
+
+在xiaohaizi数据库中创建一个record_format_demo表，并制定其行格式
+
+```sql
+mysql> USE xiaohaizi;
+Database changed
+
+mysql> CREATE TABLE record_format_demo (
+    ->     c1 VARCHAR(10),
+    ->     c2 VARCHAR(10) NOT NULL,
+    ->     c3 CHAR(10),
+    ->     c4 VARCHAR(10)
+    -> ) CHARSET=ascii ROW_FORMAT=COMPACT;
+Query OK, 0 rows affected (0.03 sec)
+```
+
+
+
+## 4.3 Compact行格式
+
+> 我们向4.2示例中的record_format_demo表中插入两条数据，作为例子介绍Compact行格式
+>
+> ```sql
+> mysql> INSERT INTO record_format_demo(c1, c2, c3, c4) VALUES('aaaa', 'bbb', 'cc', 'd'), ('eeee', 'fff', NULL, NULL);
+> Query OK, 2 rows affected (0.02 sec)
+> Records: 2  Duplicates: 0  Warnings: 0
+> 
+> mysql> SELECT * FROM record_format_demo;
+> +------+-----+------+------+
+> | c1   | c2  | c3   | c4   |
+> +------+-----+------+------+
+> | aaaa | bbb | cc   | d    |
+> | eeee | fff | NULL | NULL |
+> +------+-----+------+------+
+> 2 rows in set (0.00 sec)
+> 
+> mysql>
+> ```
+
+
+
+从图中可以看出，一条完整的记录可以分为 `记录的额外信息` 和 `记录的真实数据` 两大部分。
+
+![image-20251228145129897](/Users/yutinglai/Documents/note/MySQL-note/assets/image-20251228145129897.png)
+
+### 1) 记录的额外信息
+
+#### 1️⃣变长字段长度列表
+
+##### 是什么
+
+MySQL支持一些变长的数据类型，比如`VARCHAR(M)`、`VARBINARY(M)`、`TEXT`、`BLOB`，这些数据类型对应的列称为`变长字段`。
+
+由于变长字段占用的字节数是不确定的，因此需要单独记录下来。
+
+一个变长字段占用的存储空间分为两部分：
+
+1. 真正的数据内容
+2. 占用的**字节数**（*注意，是占用的字节数，而不是字段长度*）
+
+在`Compact`行格式中，所有变长字段实际占用的字节长度都存放在记录的开头部位，形成一个变长字段长度列表，各变长字段数据占用的字节数按照列的顺序***逆序*** 存放。
+
+
+
+我们拿`record_format_demo`表中的第一条记录举例。因为`record_format_demo`表的`c1`、`c2`、`c4`列都是`VARCHAR(10)`类型的，也就是变长的数据类型，所以这三个列的值的长度都需要保存在记录开头处，因为`record_format_demo`表中的各个列都使用的是`ascii`字符集，所以每个字符只需要1个字节来进行编码，来看一下第一条记录各变长字段内容的长度：
+
+| 列名 | 存储内容 | 内容长度（十进制表示） | 内容长度（十六进制表示） |
+| ---- | -------- | ---------------------- | ------------------------ |
+| `c1` | `'aaaa'` | `4`                    | `0x04`                   |
+| `c2` | `'bbb'`  | `3`                    | `0x03`                   |
+| `c4` | `'d'`    | `1`                    | `0x01`                   |
+
+
+
+又因为这些长度值需要按照列的逆序存放，所以最后`变长字段长度列表`的字节串用十六进制表示的效果就是（各个字节之间实际上没有空格，用空格隔开只是方便理解）：
+
+```
+01 03 04 
+```
+
+把这个字节串组成的`变长字段长度列表`填入上边的示意图中的效果就是：
+
+![image-20251228201319160](/Users/yutinglai/Documents/note/MySQL-note/assets/image-20251228201319160.png)
+
+##### 变长字段长度用1字节还是2字节表示
+
+由于第一行记录中`c1`、`c2`、`c4`列中的字符串都比较短，其长度用1个字节就可以表示。
+
+但是如果变长列内容比较长，其长度可能需要用2个字节表示（最多不会超过2个字节，因为一行记录占用字节数不能超过65535=2^16-1）。
+
+那具体是用一个字节还是两个字节来表示变长字段内容的长度，InnoDB规则如下：
+
+* 设W为字符集表示一个字符需要的最大字节数，例如`utf8`字符集中的`W`就是`3`，`gbk`字符集中的`W`就是`2`，`ascii`字符集中的`W`就是`1`。
+* 设M为变长字段最多能够存储多少个字符，例如`VARCHAR(10)`表示能存储最多`10`个字符
+* 设L为变长字段实际占用的字节数
+
+判断规则
+
+- 如果`M×W <= 255`，那么使用1个字节来表示真正字符串占用的字节数。
+
+- 如果`M×W > 255`，则分为两种情况：
+
+  - 如果`L <= 127`，则用1个字节来表示真正字符串占用的字节数。
+  - 如果`L > 127`，则用2个字节来表示真正字符串占用的字节数
+
+总结：如果该可变字段允许存储的最大字节数（`M×W`）超过255字节并且真实存储的字节数（`L`）超过127字节，则使用2个字节，否则使用1个字节。
+
+在读记录的变长字段长度列表时，对于一个字节，如何确定是一个单独的字段长度还是半个字段长度？
+
+如果最高位为0，则说明是一个单独的字节长度。如果最高位是1，则说明是半个字段长度，和后面一个字节两个字节共同表示这个可变长字段的长度。
+
+
+
+##### 如果变长字段值为NULL，变长字段长度列表会存储其长度吗
+
+变长字段长度列表中只存储值为 ***非NULL*** 的列内容占用的长度，值为 ***NULL*** 的列的长度是不储存的 。
+
+也就是说对于第二条记录来说，因为`c4`列的值为`NULL`，所以第二条记录的`变长字段长度列表`只需要存储`c1`和`c2`列的长度即可。其中`c1`列存储的值为`'eeee'`，占用`4`字节数，`c2`列存储的值为`'fff'`，占用`3`字节数。数字`4`可以用1个字节表示，`3`也可以用1个字节表示，所以整个`变长字段长度列表`共需2个字节。
+
+
+
+填充完`变长字段长度列表`的两条记录的对比图如下：
+
+![image_1c9grq2b2jok1062t8tov21lqjbj.png](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e8fe4ee6b0~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+
+
+##### 变长字段长度列表是必须的吗
+
+并不是所有记录都有这个 变长字段长度列表 部分，比方说表中所有的列都不是变长的数据类型的话，这一部分就不需要有。
+
+
+
+##### CHAR(M)列的存储格式
+
+结论：
+
+* 如果CHAR(M)列的字符集是定长字符集（例如ascii，每个字符都用固定一个字节表示），则字段占用的长度不会存到变长字段长度列表。
+* 如果CHAR(M)列的字符集是**非**定长字符集（例如utf8，用1-3字节表示一个字符），则字段占用的长度也会存到变长字段长度列表。
+
+`record_format_demo`表的`c1`、`c2`、`c4`列的类型是`VARCHAR(10)`，而`c3`列的类型是`CHAR(10)`。
+
+`record_format_demo`表采用的是`ascii`字符集，则其变长字段长度列表如图：
+
+![image_1c9jdkga71kegkjs14o111ov1ce3kn.png-12.5kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e985c8d9a7~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+
+
+`record_format_demo`表的字符集修改为utf8：
+
+```sql
+mysql> ALTER TABLE record_format_demo MODIFY COLUMN c3 CHAR(10) CHARACTER SET utf8;
+Query OK, 2 rows affected (0.02 sec)
+Records: 2  Duplicates: 0  Warnings: 0
+```
+
+修改后新的变长字段长度列表如图：
+
+![image_1c9jeb6defgf1o981lgfciokjl4.png-43.1kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e973ff4fde~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+原因：**变长字段长度列表**的本质作用是记录那些长度不固定的列到底占了多少空间。
+
+1. 为什么ASCII编码的CHAR(10)不需要在变长字段长度列表记录长度？
+
+   因为其长度是完全固定的，例如CHAR(10)就一定会占10字节，所以没有必要再额外存一个10，浪费空间。
+
+2. 为什么UTF8编码的CHAR(10)需要在变长字段长度列表记录长度？
+
+   是因为UTF8编码的字符可能有1-3个字节编码，因此CHAR(10)实际占用的字节长度在10-30这个区间。虽然底层可以根据编码规则，推测出来每一个字符是用几个字节编码，从而推测出整个字符串占用的字节长度，但是非常影响性能。
+
+   因此直接在变长字段长度列表存储其占用的字节数是一种以空间换时间的做法。
+
+
+
+#### 2️⃣NULL值列表
+
+**是什么**
+
+我们知道表中某些列可能会存锤NULL值，但是如果真的把NULL值存储起来，会非常浪费空间。
+
+Compact行格式用一个单独的NULL值列表来处理对NULL值列信息的存储。
+
+1. 统计「允许存NULL值」的列有哪些
+
+   除了以下两种情况其他都允许存NULL
+
+   * 主键列不允许存NULL
+   * 被NOT NULL修饰的列不允许
+
+2. 如果不存在「允许存NULL值」的列
+
+   则不需要NULL值列表，不会占用任何空间
+
+3. 如果存在「允许存NULL值」的列
+
+   将每一个「允许存NULL值」的列，都用一个二进制位表示：
+
+   - 1 - 为NULL值
+   - 0 - 非NULL值
+
+   最终按照列顺序**逆序**存放在NULL值列表中
+
+​	NULL值列表的长度必须是字节的整数倍，如果不足字节的整数倍，则在前面补0
+
+
+
+因为表`record_format_demo`有3个值允许为`NULL`的列，所以这3个列和二进制位的对应关系就是这样：
+
+![image_1c9g88mtt1tj51ua1qh51vjo12pg5k.png-10.4kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e9018133f7~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+
+
+NULL值列表的长度必须是字节的整数倍，因此在前面补5个0：
+
+![image_1c9g8g27b1bdlu7t187emsc46s61.png-19.4kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e901669f45~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+对于第一条记录来说，`c1`、`c3`、`c4`这3个列的值都不为`NULL`，所以它们对应的二进制位都是`0`，画个图就是这样：
+
+![image_1c9g8m05b19ge1c8v2bf163djre6e.png-21.5kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e901befeac~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+所以第一条记录的`NULL值列表`用十六进制表示就是：`0x00`。
+
+对于第二条记录来说，`c1`、`c3`、`c4`这3个列中`c3`和`c4`的值都为`NULL`，所以这3个列对应的二进制位的情况就是：
+
+![image_1c9g8ps5c1snv1bhj3m48151sfl6r.png-20.6kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e944a8af0c~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+所以第二条记录的`NULL值列表`用十六进制表示就是：`0x06`。
+
+所以这两条记录在填充了`NULL值列表`后的示意图就是这样：
+
+![image_1c9grs9m4co8134u1t2rjhm1q6rc0.png-39kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e95903144f~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+
+
+#### 3️⃣记录头信息
+
+由固定的`5`个字节，即`40`个二进制位组成。
+
+不同的位代表不同的意思，如图：
+
+![image_1c9geiglj1ah31meo80ci8n1eli8f.png-29.5kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e97718ef01~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+这些二进制位代表的详细信息如下表：
+
+| 名称           | 大小（单位：bit） | 描述                                                         |
+| -------------- | ----------------- | ------------------------------------------------------------ |
+| `预留位1`      | `1`               | 没有使用                                                     |
+| `预留位2`      | `1`               | 没有使用                                                     |
+| `delete_mask`  | `1`               | 标记该记录是否被删除                                         |
+| `min_rec_mask` | `1`               | B+树的每层非叶子节点中的最小记录都会添加该标记               |
+| `n_owned`      | `4`               | 表示当前记录拥有的记录数                                     |
+| `heap_no`      | `13`              | 表示当前记录在记录堆的位置信息                               |
+| `record_type`  | `3`               | 表示当前记录的类型，`0`表示普通记录，`1`表示B+树非叶子节点记录，`2`表示最小记录，`3`表示最大记录 |
+| `next_record`  | `16`              | 表示下一条记录的相对位置                                     |
+
+>如果看不懂各个位的概念可以先略过，需要用到再深入研究。
+
+
+
+`record_format_demo`中的两条记录的`头信息`分别是什么：
+
+![img](/Users/yutinglai/Documents/note/MySQL-note/assets/17075b82cb070959~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+
+
+### 2) 记录的真实数据
+
+#### 隐藏列
+
+每一行记录除了我们自己定义的列，MySQL还会默认的添加一些列（也称为`隐藏列`）：
+
+| 列名             | 是否必须 | 占用空间 | 描述                   |
+| ---------------- | -------- | -------- | ---------------------- |
+| `row_id`         | 否       | `6`字节  | 行ID，唯一标识一条记录 |
+| `transaction_id` | 是       | `6`字节  | 事务ID                 |
+| `roll_pointer`   | 是       | `7`字节  | 回滚指针               |
+
+`InnoDB`表主键的生成策略：
+
+* 用户定义了主键，则使用用户定义的主键
+* 用户没有定义主键，则选择一个`Unique`键作为主键
+* 如果没有`Unique`键，则默认添加一个名为`row_id`的隐藏列作为主键
+
+这就是为什么`row_id`列不是必须的，而其他两个列是必须的。
+
+
+
+因为表`record_format_demo`并没有定义主键，所以`MySQL`服务器会为每条记录增加上述的3个列。
+
+现在看一下加上`记录的真实数据`的两个记录长什么样吧：
+
+![image_1c9h256f9nke14311adhtu61ie2dn.png-92kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e973b70372~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+注意事项：
+
+1. 表`record_format_demo`使用的是`ascii`字符集，所以`0x61616161`就表示字符串`'aaaa'`，`0x626262`就表示字符串`'bbb'`，以此类推。
+2. 注意第1条记录中`c3`列的值，它是`CHAR(10)`类型的，它实际存储的字符串是：`'cc'`，而`ascii`字符集中的字节表示是`'0x6363'`，虽然表示这个字符串只占用了2个字节，但整个`c3`列仍然占用了10个字节的空间，除真实数据以外的8个字节的统统都用空格字符填充，空格字符在`ascii`字符集的表示就是`0x20`。
+3. 注意第2条记录中`c3`和`c4`列的值都为`NULL`，它们被存储在了前边的`NULL值列表`处，在记录的真实数据处就不再冗余存储，从而节省存储空间。
+
+
+
+## 4.4 VARCHAR(M) M的最大取值
+
+MySQL 规定一行中，除了BLOB、TEXT类型的列之外，其他所有列（不包括隐藏列和记录头）占用的总长度不能超过 **65,535 字节**
+
+
+
+假设一个表中只有一个`VARCHAR(M)`类型的字段，其中的`M`代表该类型最多存储的字符个数，那M的取值最大可以是多少呢？
+
+*这个表只有一个VARCHAR(M)类型的列*，那么一行数据需要占用3部分存储空间（不包括隐藏列和记录头）：
+
+1. 真实数据
+2. 数据占用字节的长度（最多2字节，因为2^8-1=65535，两字节**所能表示的最大数值范围**刚好覆盖了 MySQL 一行记录的最大限制）
+3. NULL值标识，如果该列有NOT NULL属性，则不占用这部分存储空间（NOT NULL 则0字节；可为NULL 则1字节；）
+
+
+
+综上：
+
+* NOT NULL：则真实数据最多可以占用65535 - 2 = 65533
+
+  ```sql
+  # M=65535 报错
+  mysql> create table varchar_size_demo( c varchar(65535) NOT NULL) CHARSET=ascii ROW_FORMAT=compact;
+  ERROR 1118 (42000): Row size too large. The maximum row size for the used table type, not counting BLOBs, is 65535. This includes storage overhead, check the manual. You have to change some columns to TEXT or BLOBs
+  # M=655354报错
+  mysql> create table varchar_size_demo( c varchar(65534) NOT NULL) CHARSET=ascii ROW_FORMAT=compact;
+  ERROR 1118 (42000): Row size too large. The maximum row size for the used table type, not counting BLOBs, is 65535. This includes storage overhead, check the manual. You have to change some columns to TEXT or BLOBs
+  # M=65533 报错
+  mysql> create table varchar_size_demo( c varchar(65533) NOT NULL) CHARSET=ascii ROW_FORMAT=compact;
+  Query OK, 0 rows affected (0.010 sec)
+  ```
+
+  
+
+* 可为NULL：则真实数据最多可以占用65535 - 2 -1 = 65532
+
+  ```sql
+  # M=65535 报错
+  mysql> create table varchar_size_demo( c varchar(65535) ) CHARSET=ascii ROW_FORMAT=compact;
+  ERROR 1118 (42000): Row size too large. The maximum row size for the used table type, not counting BLOBs, is 65535. This includes storage overhead, check the manual. You have to change some columns to TEXT or BLOBs
+  # M=65533 报错
+  mysql> create table varchar_size_demo( c varchar(65533) ) CHARSET=ascii ROW_FORMAT=compact;
+  ERROR 1118 (42000): Row size too large. The maximum row size for the used table type, not counting BLOBs, is 65535. This includes storage overhead, check the manual. You have to change some columns to TEXT or BLOBs
+  # M=65532可以成功创建表
+  mysql> create table varchar_size_demo( c varchar(65532) ) CHARSET=ascii ROW_FORMAT=compact;
+  Query OK, 0 rows affected (0.011 sec)
+  ```
+
+  
+
+上面的数据基于数据表使用的是ascii字符集，如果使用的不是ascii字符集会怎么样？
+
+VARCHAR(M)中的M表示的是该字段最多存储的字符数量，当该列允许为NULL的情况下：
+
+ascii字符集（1个字符占1字节）：M最大取值 = 65532 / 1 = 65532
+
+gbk字符集（1个字符占1-2字节）：M最大取值 = 65532 / 2 =32766
+
+```sql
+mysql> CREATE TABLE varchar_size_demo( c VARCHAR(32767) ) CHARSET=gbk ROW_FORMAT=Compact;
+ERROR 1118 (42000): Row size too large. The maximum row size for the used table type, not counting BLOBs, is 65535. This includes storage overhead, check the manual. You have to change some columns to TEXT or BLOBs
+mysql> CREATE TABLE varchar_size_demo( c VARCHAR(32766) ) CHARSET=gbk ROW_FORMAT=Compact;
+Query OK, 0 rows affected (0.007 sec)
+```
+
+utf字符集（一个字符占1-3字节）：M最大取值 =65532 / 3 = 21844
+
+
+
+## 4.5 行溢出
+
+MySQL将整个存储空间划分为若干个页，每个页的大小为16KB，即`16384`字节。
+
+而一行记录最大不能超过 **65,535 字节**，也就是说可能出现***一个页放不下一条记录***的情况。
+
+在`Compact`和`Redundant`行格式中，对于占用存储空间非常大的列，在`记录的真实数据`处只会存储该列的一部分数据，把剩余的数据分散存储在几个其他的页中，然后`记录的真实数据`处用20个字节存储指向这些页的地址（当然这20个字节中还包括这些分散在其他页面中的数据的占用的字节数），从而可以找到剩余数据所在的页，如图所示：
+
+![image_1d48e3imu1vcp5rsh8cg0b1o169.png-149kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e9aab47ea5~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+从图中可以看出来，对于`Compact`和`Redundant`行格式来说，如果某一列中的数据非常多的话，在本记录的真实数据处只会存储该列的前`768`个字节的数据和一个指向其他页的地址，然后把剩下的数据存放到其他页中，这个过程也叫做`行溢出`，存储超出`768`字节的那些页面也被称为`溢出页`。画一个简图就是这样：
+
+![image_1conbskr7apj19ns1d194vs1buo1t.png-35.8kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e9a5d5637a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+***VARCHAR(M)*** 、***TEXT***、***BLOB*** 类型的列在存储数据非常多的时候都会发生`行溢出`。
+
+不用太关注行溢出的临界点在哪里，只要知道如果我们一条记录的某个列中存储的数据占用的字节数非常多时，该列就可能成为`溢出列`。
+
+
+
+## 4.6 Dynamic & Compressed行格式
+
+`Dynamic`和`Compressed`和`Compact`行格式的区别主要在于`行溢出`的处理方式不同：
+
+`Dynamic`和`Compressed`行格式不会在记录的真实数据处存储字段真实数据的前`768`个字节，而是把所有的字节都存储到其他页面中，只在记录的真实数据处存储其他页面的地址，就像这样：
+
+![image_1conbtnmr1sg1hao1nf41pi1eb72a.png-29.9kB](/Users/yutinglai/Documents/note/MySQL-note/assets/169710e9b2c2b71e~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+`Compressed`行格式和`Dynamic`不同的一点是，`Compressed`行格式会采用压缩算法对页面进行压缩，以节省空间。
+
+
+
+
+
+## 4.7 注意事项
+
+* CHAR(10)和VARCHAR(10)的区别是什么
+
+  **CHAR(10)**：
+
+  - **定长分配**：无论你存入的是 1 个字符还是 10 个字符，它在磁盘上始终占据 **10 个字符** 宽度的空间。
+  - **空格填充**：如果存入内容不满 10 个字符，MySQL 会在末尾用空格填充至 10 位。
+
+  **VARCHAR(10)**：
+
+  - **变长存储**：它是“按需分配”。如果你存入 3 个字符，它就只占用 3 个字符的空间。
+  - **额外开销**：由于长度不固定，它必须额外占用 **1 字节**（长度 < 255）或 **2 字节**（长度 > 255）来存储数据的实际长度。
+
+  怎么选？
+
+  如果字段长度非常固定（如 UUID、MD5、身份证号、国家/状态缩写）选CHAR(M)，如果字段长度跨度很大（如 用户名、个人简介**、**评论）选VARCHAR(M)。
+
+* 变长字符集的`CHAR(M)`类型的列要求至少占用`M`个字节，而`VARCHAR(M)`却没有这个要求。
+
+  例如如果使用`utf8`字符集，`CHAR(10)`列存储的数据字节长度的范围是10～30个字节。即使我们向该列中存储一个空字符串也会占用`10`个字节，这是怕将来更新该列的值的字节长度大于原有值的字节长度而小于10个字节时，可以在该记录处直接更新，而不是在存储空间中重新分配一个新的记录空间，导致原有的记录空间成为碎片。
+
+* 为什么记录的额外信息数据都要逆序放
+
+  提高 CPU 读取记录的性能。
+
+  
