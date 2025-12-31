@@ -2073,7 +2073,7 @@ File Trailer也是所有页共有的，不是数据页特有的。
 
 为了解决以上问题，需要引入索引。
 
-## 6.2 索引
+## 6.2 索引概念介绍
 
 ### 是什么
 
@@ -2366,3 +2366,578 @@ ALTER TABLE index_demo DROP INDEX idx_c2_c3;
   因为每建立一个索引都会建立一棵`B+`树，每插入一条记录都要维护各个记录、数据页的排序关系，这是很费性能和存储空间的。
 
   因为每一个索引，都对应着一颗B+树，就意味着每次增删改一条记录，都要维护涉及到的所有索引结构，既浪费存储空间，也影响性能。
+
+
+
+## 6.3 索引的使用
+
+### 6.3.1 使用索引的代价
+
+* 空间上的代价
+
+  每个索引都对应一颗B+树。
+
+  B+树的每个节点都是一个页，每个页的大小为16KB。
+
+  一个索引由很多个页构成，占用一定的存储空间。维护的索引越多，占用的存储空间越多。
+
+* 时间上的代价
+
+  B+树的特性是：
+
+  1. 每一个页中的记录是按照索引列大小升序排序形成单链表
+  2. 一层中的每一个页也是按照索引列的大小升序排列，组成双向链表
+
+  因此每次对表中的数据进行增删改操作，都需要去维护所有索引B+树，存储引擎可能需要进行额外的页面分裂、页面回收来保持上述特性，因此如果建立很多索引，对性能也会有影响。
+
+
+
+综上，索引不是越多越好，而是应该按照一定的原则建立又好又少的索引，这样一方面能提升我们搜索的效率，另一方面保证时间和空间的消耗比较小。
+
+### 6.3.2 索引的使用原则
+
+创建一个`person_info`表作为示例来展开后续的介绍：
+
+```sql
+CREATE TABLE person_info(
+    id INT NOT NULL auto_increment,
+    name VARCHAR(100) NOT NULL,
+    birthday DATE NOT NULL,
+    phone_number CHAR(11) NOT NULL,
+    country varchar(100) NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_name_birthday_phone_number (name, birthday, phone_number)
+);
+```
+
+该表的索引信息如下：
+
+* 主键是`id`列，会自动递增。InnoDB存储引擎会为`id`列自动创建聚簇索引。
+
+* 额外定义了二级索引`idx_name_birthday_phone_number`，由`name、birthday、phone_number`三列构成，索引会先按照`name`排序，`name`相同情况下按照`birthday`排序，`birthday`相同情况下按照`phone_number`排序。
+
+  ![image_1dmo2n5c11ij019unpjtpf21tdr9.png-121.1kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16db02bc665cf0b1~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+#### 全值匹配
+
+搜索条件列和索引列完全一致，且是等值匹配，此时索引能够生效。
+
+示例：
+
+该sql查询语句，联合索引的`name、birthday、phone_number`三列的都会用到：
+
+```sql
+SELECT * FROM person_info WHERE name = 'Ashburn' AND birthday = '1990-09-27' AND phone_number = '15123983239';
+```
+
+
+
+注意：
+
+***如果查询条件中三列的顺序调换了，对结果没有影响，因为MySQL的查询优化器，会自动对sql语句进行优化。***
+
+也就是说下面这个sql语句和上面的，效果完全一致。
+
+```sql
+SELECT * FROM person_info WHERE birthday = '1990-09-27' AND phone_number = '15123983239' AND name = 'Ashburn';
+```
+
+
+
+#### 最左匹配原则
+
+`<name, birthday, phone_number>`要让这个索引生效，查询条件不一定要包含所有列，可以仅包含部分列，但一定是最左边的列。
+
+示例：
+
+这两条sql语句`<name, birthday, phone_number>`索引都可以生效。
+
+```sql
+SELECT * FROM person_info WHERE name = 'Ashburn';
+SELECT * FROM person_info WHERE name = 'Ashburn' AND birthday = '1990-09-27';
+```
+
+但是下面这条sql语句就无法生效。
+
+```sql
+SELECT * FROM person_info WHERE birthday = '1990-09-27';
+```
+
+因为`<name, birthday, phone_number>`这个索引的数据，是先按照`name`列排序，`name`列相同的情况下，再按照`birthday`列排序，`<name, birthday>`都相同的情况下，再按照`phone_number`列排序。
+
+对于下面这条sql语句，只能用到联合索引的`name`列，因为`name = 'Ashburn'`的所有记录中，`phone_number`列并不一定是有序的，因此无法使用索引。
+
+```sql
+SELECT * FROM person_info WHERE name = 'Ashburn' AND phone_number = '15123983239';
+```
+
+
+
+#### 最左模糊匹配原则
+
+`<name, birthday, phone_number>`这个索引会先对`name`列进行排序，这里的排序意思是，先根据第一个字符排序，第一个字符相同的情况下再对第二个字符排序...***这里字符的排序规则就是根据为该表设置的字符集及比较规则来确定了***。
+
+因此我们的sql语句如果使用模糊匹配，最左的元素不能是模糊的，例如：
+
+这个sql可以使用`<name, birthday, phone_number>`索引
+
+```sql
+SELECT * FROM person_info WHERE name LIKE 'As%';
+```
+
+而这个sql不会走索引，而是会进行全表查询。
+
+```sql
+SELECT * FROM person_info WHERE name LIKE '%As%';
+```
+
+因为以`As`开头的字符串是有序的，可以走索引。字符串中间有`'As'`的字符串并不是有序的，所以只能全表扫描。
+
+
+
+#### 范围匹配
+
+下面这个范围匹配是可以走`<name, birthday, phone_number>`索引的，因为`name`列本身就是有序的。
+
+```sql
+SELECT * FROM person_info WHERE name > 'Asa' AND name < 'Barlow';
+```
+
+
+
+如果我们对左边的列进行范围匹配，则对其右边的列索引就不会生效了。
+
+例如下面这条sql语句，由于`name`列是有序的，因此执行`name > 'Asa' AND name < 'Barlow' `这个查询条件是可以走索引的。
+
+但是查询出来的所有满足`name > 'Asa' AND name < 'Barlow' `的记录，它们的`birthday`列并不是有序的，因此对birthday列无法使用索引。
+
+```sql
+SELECT * FROM person_info WHERE name > 'Asa' AND name < 'Barlow' AND birthday > '1980-01-01';
+```
+
+
+
+如果我们对左边的列进行精确匹配，则对右边的列可以进行范围查询
+
+```sql
+SELECT * FROM person_info 
+WHERE name = 'Ashburn' 
+AND birthday > '1980-01-01' AND birthday < '2000-12-31' 
+AND phone_number > '15100000000';
+```
+
+由于`name`列记录是有序的，因此对name查询条件可以使用索引。
+
+由于`name = 'Ashburn'`的记录其`birthday`列是有序的，因此`birthday`的查询条件也可以走索引。
+
+但满足`name = 'Ashburn' AND birthday > '1980-01-01' AND birthday < '2000-12-31'`的记录，其`phone_number`是无序的，因此对`phone_number`列无法使用索引。
+
+
+
+#### Order By
+
+下面这条sql语句，要求先根据`name`列排序，`name`相等的时候根据`birthday`排序，`birthday`相等的时候根据`phone_number`排序。
+
+```sql
+SELECT * FROM person_info ORDER BY name, birthday, phone_number LIMIT 10;
+```
+
+这和`<name, birthday, phone_number>`索引的特点是完全一致的。
+
+所以我们不需要额外进行排序，直接从这个二级索引中获取前10条数据即可。
+
+
+
+如果没有索引，`order by`命令需要把所有记录都加载到内存，再用比如快速排序、归并排序等的排序算法在内存中对这些记录进行排序。
+
+有的时候可能查询的结果集太大以至于不能在内存中进行排序的话，还可能暂时借助磁盘的空间来存放中间结果，排序操作完成后再把排好序的结果集返回到客户端。
+
+在`MySQL`中，把这种在内存中或者磁盘上进行排序的方式统称为文件排序（filesort），***Filesort 的本质是“无法利用索引顺序，而必须在内存或磁盘中进行的额外排序操作”。***这种排序方式速度非常慢。相对来说如果有直接可用的索引，速度则是快多了。
+
+
+
+注意：
+
+* Order By的顺序必须和联合索引的顺序一致。如果顺序不一致，就无法使用索引了。
+
+  下面这个sql语句就无法使用`<name, birthday, phone_number>`索引
+
+  ```sql
+  SELECT * FROM person_info ORDER BY birthday, name, phone_number LIMIT 10;
+  ```
+
+  
+
+* 下面这些情况都会走直接索引，无须filesort
+
+  ```sql
+  SELECT * FROM person_info ORDER BY name LIMIT 10;
+  
+  SELECT * FROM person_info ORDER BY name, birthday LIMIT 10;
+  
+  SELECT * FROM person_info WHERE name = 'A' ORDER BY birthday, phone_number LIMIT 10;
+  ```
+
+* 下面
+
+  ```sql
+  # 这个也会走索引，能够获得name有序的列表
+  # 但是最终依然要进行全表的filesort，因为phone_number是无序的
+  # 例如有100条数据name都一样，phone_number不一样，则需要将这100条数据全部排序才能获得最终结果
+  # 它相比于真正的全表扫描还是有一点点优化，因为至少name是有序的，MySQL 在进行 filesort 时，其内部的排序算法（如堆排序）可以利用这种局部有序性来稍微减轻一点点计算压力。
+  # 但本质上，它需要进行全表的filesort。只是比没有索引稍微好一点。
+  # 下面这条sql语句
+  SELECT * FROM person_info ORDER BY name, phone_number LIMIT 10;
+  ```
+
+  
+
+
+
+#### Group By
+
+这个sql语句，它做了什么：
+
+```sql
+SELECT name, birthday, phone_number, COUNT(*) FROM person_info GROUP BY name, birthday, phone_number
+```
+
+1. 根据`name`进行分组
+2. `name`相同的分组中，再根据`birthday`进行分组，得到小分组
+3. `name`、`birthday`相同的小分组中，再根据`phone_number`分组，得到小小分组
+4. COUNT(*)表示统计各个小小分组的包含的记录条数
+
+由于`<name, birthday, phone_number>`索引本身就是按照`GROUP BY name, birthday, phone_number`这种分组方式的顺序排序的，因此可以直接使用该索引，无需重新分组。
+
+
+
+### 6.3.3 索引失效的情况
+
+#### ASC、DESC混用
+
+这个`<name, birthday, phone_number>`索引，是先根据`name`升序排序，再根据`birthday`升序排序，最后根据`phone_number`升序排序。
+
+进行`ORDER BY`排序的时候，如果想使用该联合索引，必须保证`ORDER BY`后的各个列排序方式一致，索引才会生效。
+
+示例：
+
+* `ORDER BY name, birthday LIMIT 10` （不显式指定，默认是ASC升序排序）
+
+  直接从索引最左边往右读10条记录即可。
+
+* `ORDER BY name DESC, birthday DESC LIMIT 10`
+
+  直接从索引最右边往左读10条记录即可。
+
+
+
+但是如果各个列排序方式不一致，例如要求按照name升序排序，再按照birthday降序排序：
+
+`SELECT * FROM person_info ORDER BY name, birthday DESC LIMIT 10;`（name列不显式指定，默认是ASC升序排序）
+
+如果依然使用`<name, birthday, phone_number>`索引，其查找方式为：
+
+1. 先从索引的最左边开始找，找到name列的最小值。
+2. 找到name值为最小值的所有记录。
+3. 从这些记录的最右边开始往左找10条记录。
+4. 如果name值为最小值的记录数<10条，则继续往右找name列的第二小值，重复上过程，直到找到10条记录为止。
+
+
+
+这个过程非常复杂，所以为了避免采取更复杂的算法，MySQL遇到这样的情况会直接进行全量排序。
+
+> 这里可能有疑问，一个页中的记录是根据单向链表相连接的，那一个页中的记录如何实现从右往左读呢？
+>
+> gemini解释的所谓从右往左读的流程：
+>
+> 1. 宏观定位：找到“书”的最后一页
+>
+> MySQL 首先利用 B+ 树的非叶子节点直接定位到索引叶子节点链表的**最后一个 Page（最右侧的页）**。
+>
+> 2. 页内“倒着数”：利用槽（Slot）跳跃
+>
+> 进入这个 16KB 的数据页后，记录确实是 `A -> B -> C` 这样单向连接的。为了找最后的 10 条，MySQL 的动作如下：
+>
+> ​	1). **访问页目录（Page Directory）**：页目录就像是这一页的“快捷书签”。它存储在页的尾部。
+>
+> ​	2). **定位最后一个槽（Last Slot）**：页目录的最后一个槽指向的是本页最大的记录（通常是内建的 `Supremum` 伪记录）。
+>
+> ​	3). **获取该组数据**：每个槽管理一组记录（通常 4-8 条）。MySQL 找到最后一个槽后，就拿到了这组记录的起始位置，然后**正向遍历**这 4-8 条，得到本页最末尾的几条。
+>
+> ​	4). **跨槽跳跃**：如果这一组只有 6 条，不够 10 条，MySQL 就会看**倒数第二个槽**。
+>
+> ​				它跳转到倒数第二个槽指向的记录。
+>
+> ​				从那里开始正向读，补齐剩下的 4 条。
+>
+> 3. 跨页“回头看”：利用 Prev Page 指针
+>
+> 如果这最后一页一共才 8 条记录（没填满），不够 10 条怎么办？
+>
+> - MySQL 会看当前页头（File Header）里的 `FIL_PAGE_PREV` 指针。
+> - 直接“闪现”到物理上的**前一个页面**。
+> - 在这个新页面里，重复“看最后一个槽”的动作，直到数满 10 条为止。
+>
+> 4. 关键结论：这依然是“顺序 IO”
+>
+> 虽然在页内部有“小碎步”的正向遍历，但这种操作是在内存中完成的，速度极快。
+>
+> - **对比 Filesort**：Filesort 是“先把 4 万行全部加载并重排”，这叫**全量计算**。
+> - **对比这种扫描**：它只触碰了最后 1-2 个页面，读取了大概 10-20 条记录。这叫**流式读取**。
+
+
+
+#### Order By排序列包含非同一个索引的列
+
+下面`name`和`country`就不属于同一个索引，name列属于`<name, birthday, phone_number>`索引，country列不属于任何索引，因此会直接走全量排序，而不会走索引。
+
+```sql
+SELECT * FROM person_info ORDER BY name, country LIMIT 10;
+```
+
+
+
+#### 使用了复杂表达式
+
+假设表中有一个整数列`my_col`，我们为这个列建立了索引。下边的两个`WHERE`子句虽然语义是一致的，但是在效率上却有差别：
+
+1. `WHERE my_col * 2 < 4`
+2. `WHERE my_col < 4/2`
+
+第1个`WHERE`子句中`my_col`列并不是以单独列的形式出现的，而是以`my_col * 2`这样的表达式的形式出现的，存储引擎会依次遍历所有的记录，计算这个表达式的值是不是小于`4`，所以这种情况下是使用不到为`my_col`列建立的`B+`树索引的。
+
+而第2个`WHERE`子句中`my_col`列并是以单独列的形式出现的，这样的情况可以直接使用`B+`树索引。
+
+所以结论就是：如果索引列在比较表达式中不是以单独列的形式出现，而是以某个表达式，或者函数调用形式出现的话，是用不到索引的。
+
+因为索引是按照`my_col`列创建的，而按照不是`my_col`参与表达式后的结果/`my_col`参与函数调用之后的结果来创建的。
+
+
+
+### 6.3.4 回表
+
+#### 回表的代价
+
+以`<name, birthday, phone_number>`二级索引为例，看该sql语句是如何执行的
+
+```sql
+SELECT * FROM person_info WHERE name > 'Asa' AND name < 'Barlow';
+```
+
+1. 首先，根据二级索引找到所有满足` name > 'Asa' AND name < 'Barlow'`的记录
+2. 由于`SELECT *`，而二级索引不包含`country`列信息，因此需要回表到聚簇索引查询完整的记录信息。
+
+
+
+满足` name > 'Asa' AND name < 'Barlow'`的二级索引记录在磁盘中是连续存储的，也就是说这些记录会集中分布在一到多个数据页，所以在二级索引查询该数据我们只需要进行`顺序I/O`。
+
+但我们在二级索引查询到的这些记录的`id主键`并不一定是连续有序的，因此这些记录可能散落在聚簇索引的各个页中，因此回表即在聚簇索引查询的过程我们需要进行`随机I/O`。
+
+`随机I/O`的性能实际上是非常低的。
+
+因此，需要回表的记录个数越多，使用二级索引的性能就越低，MySQL就越倾向于进行全表查询。
+
+例如假设满足` name > 'Asa' AND name < 'Barlow'`的记录占全表的90%，如果还使用二级索引，对这90%的记录都需要回表，那还不如直接进行全表扫描了。
+
+
+
+那什么时候采用全表扫描的方式，什么时候使用采用`二级索引 + 回表`的方式去执行查询呢？
+
+查询优化器会进行统计，大体来说：需要回表的记录数越多，就越倾向于使用全表扫描，反之倾向于使用`二级索引 + 回表`的方式。
+
+下面这个sql由于需要查询的记录条数少，因此回表次数少，则MySQL更倾向于使用`二级索引 + 回表`的方式。
+
+```sql
+SELECT * FROM person_info WHERE name > 'Asa' AND name < 'Barlow' LIMIT 10;
+```
+
+
+
+下面这个sql语句，如果使用二级索引，则对100%的记录都需要进行回表，那还不如直接全表扫描再进行filesort。
+
+```sql
+SELECT * FROM person_info ORDER BY name, birthday, phone_number;
+```
+
+
+
+如果我们增加了limit子句，这样需要回表的记录特别少，优化器就会倾向于使用`二级索引 + 回表`的方式执行查询。
+
+```sql
+SELECT * FROM person_info ORDER BY name, birthday, phone_number LIMIT 10;
+```
+
+
+
+#### 覆盖索引-避免回表
+
+之所以需要回表是因为我们查询的列的范围超过二级索引包含的列的范围，
+
+例如 `*` 包含`id, name, birthday, phone_number, country`五列，而`<name, birthday, phone_number>`二级索引不包含country列，所以需要回到聚簇索引查询完整的信息。（注意二级索引也是包含主键id列的哦）
+
+```sql
+SELECT * FROM person_info ORDER BY name, birthday, phone_number;
+```
+
+
+
+如果我们查询的列的范围在索引包含的列的范围之内，那么就不需要回表了，例如这两条sql语句：
+
+```sql
+SELECT name, birthday, phone_number FROM person_info WHERE name > 'Asa' AND name < 'Barlow'
+
+SELECT name, birthday, phone_number  FROM person_info ORDER BY name, birthday, phone_number;
+```
+
+
+
+因此为了性能考虑，不推荐使用 `*` 作为查询列表，推荐将需要的列依次写出。
+
+
+
+### 6.3.5 索引创建原则
+
+#### 只为搜索、排序、分组的列创建索引
+
+只为`WHERE`/`ORDER BY`/`GROUP BY`子句中的列创建索引。
+
+例如该sql子句，我们只为`name`列创建索引即可，无须为`birthday`、`country`列创建索引，这两列可以回表查询得到。
+
+```sql
+SELECT birthday, country FROM person_name WHERE name = 'Ashburn';
+```
+
+
+
+#### 为大基数的列创建索引
+
+列的基数表示这一列中不同的值的个数，例如某个列包含值`2, 5, 8, 2, 5, 8, 2, 5, 8`，虽然有`9`条记录，但该列的基数却是`3`，只有`2、5、8`三个不同的值。
+
+如果一个列基数为1，则说明这个列的所有值都一样，那为这个列创建索引是没有任何效率提升的，还会带来额外的维护开销。
+
+如果一个列的基数越大，则说明他的区分度越大，为其创建索引的收益更大，因为根据索引能够更快定位到局部。
+
+
+
+#### 索引列的类型尽量取小
+
+如果我们一个列的类型为整数类型，可以选择的类型有`TINYINT`、`MEDIUMINT`、`INT`、`BIGINT`，它们表示的范围从左到右依次增大。
+
+我们倾向于如果索引列的数据类型能取小，就取小。原因如下：
+
+1. 数据类型越小，在查询时进行的比较操作越快（CPU层面）
+2. 数据类型越小，一条记录占用的空间越小，一个页能存储的记录条数越多，搜索时需要查询的页越少，磁盘IO次数更少，读写效率更高。
+3. 对于主键来说更加适用，因为聚簇索引、二级索引中都会存储一份主键。如果主键使用更小的数据类型，也就意味着节省更多的存储空间和更高效的`I/O`。
+
+
+
+#### 字符串可以根据前缀创建索引
+
+字符串是由字符构成的，一个字符根据选用的字符集不同，可能占用不同的字节数。
+
+例如如果使用utf8字符集，则一个字符需要占用1-3字节不等。
+
+如果说我们的字符串很长的话，则其占用的字节数也会很大。
+
+假设我们需要为类型为字符串的某列建立索引，如果这个列存储的字符串通常都非常长，那我们为该列创建的索引会存在如下问题：
+
+1. 这个索引会非常占用空间，因为其索引列占用的字节数多。
+2. 查询比较的时候耗时长，因为要一个个字符对比。
+
+
+
+是一种折中的方案，是仅根据前缀创建索引，例如我们只为这列的前10个字符创建二级索引，则：
+
+1. 二级索引不用存储完整的字符串，节省了存储空间。
+2. 也能够大致实现排序功能，查询速度比没有索引的时候快多了
+3. 如果我们要查询完整的字符串，可以定位到匹配的前缀，然后回表查询。
+
+
+
+比方说我们在建表语句中只对`name`列的前10个字符进行索引可以这么写：
+
+```sql
+CREATE TABLE person_info(
+    name VARCHAR(100) NOT NULL,
+    birthday DATE NOT NULL,
+    phone_number CHAR(11) NOT NULL,
+    country varchar(100) NOT NULL,
+    KEY idx_name_birthday_phone_number (name(10), birthday, phone_number)
+);    
+```
+
+`name(10)`就表示在建立的`B+`树索引中只保留记录的前`10`个字符的编码。
+
+这种只索引字符串值的前缀的策略是我们非常鼓励的，尤其是在字符串类型存储的字符比较多的时候。
+
+
+
+使用列前缀索引的方式，无法支持使用`Order By`索引排序。
+
+例如我们创建一个这个索引`<name(10), birthday, phone_number>`，下面这个sql语句无法使用该索引进行排序，因为该索引只能保证`name(10)`有序，无法保证完整的`name`列有序，MySQL 无法确信索引里的顺序就是真实的顺序，因此它会放弃索引排序，转而进行全量排序filesort。
+
+```sql
+SELECT * FROM person_info ORDER BY name LIMIT 10;
+```
+
+
+
+#### 尽量使用AUTO_INCREMENT自动生成主键
+
+假设某个数据页存储的记录已经满了，它存储的主键值在`1~100`之间：
+
+![image_1capq3r1o1geqdck1cnc1fkihj39.png-28.1kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16db02bc7153fee5~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+如果此时再插入一条主键值为`9`的记录，那它插入的位置就如下图：
+
+![image_1capq7nnv13en8b31lvtj2i1e8lm.png-35.3kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16db02bc77059366~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+我们需要把当前页面分裂成两个页面，把本页中的一些记录移动到新创建的这个页中。
+
+因此如果我们频繁在索引的中间插入输入，则会造成频繁的页分裂和记录移位，导致产生大量的性能损耗。
+
+所以对于主键列，我们尽量使用AUTO_INCREMENT修饰，让其每插入一条新的数据自动递增生成主键。
+
+
+
+#### 避免创建冗余索引
+
+下面这个建表语句创建了idx_name_birthday_phone_number、idx_name两个二级索引。
+
+```sql
+CREATE TABLE person_info(
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    birthday DATE NOT NULL,
+    phone_number CHAR(11) NOT NULL,
+    country varchar(100) NOT NULL,
+    PRIMARY KEY (id),
+    KEY idx_name_birthday_phone_number (name(10), birthday, phone_number),
+    KEY idx_name (name(10))
+);    
+```
+
+实际上idx_name这个索引是完全冗余的，因为通过`idx_name_birthday_phone_number`索引就可以对`name`列进行快速搜索。
+
+下面这种情况是极易容易忽略的：
+
+```sql
+CREATE TABLE repeat_index_demo (
+    c1 INT PRIMARY KEY,
+    c2 INT,
+    UNIQUE uidx_c1 (c1),
+    INDEX idx_c1 (c1)
+);  
+```
+
+`c1`列本身是主键，MySQL会自动为其创建聚簇索引。
+
+`UNIQUE uidx_c1 (c1)`又给c1列创建了唯一索引。
+
+`INDEX idx_c1 (c1)`又给c1列创建了普通索引。
+
+所以定义的唯一索引和普通索引都是冗余的。
+
+
+
+定义了冗余的索引，不会提升查询性能，还会占用存储空间，带来额外的维护成本，所以一定要避免定义冗余的索引。
