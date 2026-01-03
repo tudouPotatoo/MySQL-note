@@ -2941,3 +2941,311 @@ CREATE TABLE repeat_index_demo (
 
 
 定义了冗余的索引，不会提升查询性能，还会占用存储空间，带来额外的维护成本，所以一定要避免定义冗余的索引。
+
+
+
+# 7. MySQL的数据目录
+
+> 本书的知识点以MySQL5.7为准
+
+## 7.1 是什么
+
+`数据目录`是用来存储`MySQL`在运行过程中产生的数据。
+
+包含「用户创建的数据库、插入的记录等用户数据」以及「MySQL为程序能够更好的运行创建的一些额外数据」。
+
+## 7.2 在哪里
+
+数据目录位置就对应着一个系统变量`datadir`，通过下面的命令可以查询其位置：
+
+```sql
+mysql> SHOW VARIABLES LIKE 'datadir';
++---------------+--------------------------+
+| Variable_name | Value                    |
++---------------+--------------------------+
+| datadir       | /opt/homebrew/var/mysql/ |
++---------------+--------------------------+
+1 row in set (0.011 sec)
+```
+
+## 7.3 数据目录的结构
+
+数据目录针对数据库信息、表信息、视图信息等有不同的存储方式，下面分别展开介绍。
+
+### 7.3.1 数据库信息
+
+当我们使用`CREATE DATABASE 数据库名`语句创建一个数据库的时候，MySQL会做两件事：
+
+1. 在数据目录下创建一个和数据库名同名的子目录。
+2. 在数据库同名子目录下创建一个名为`db.opt`文件，这个文件存储数据库的各种属性，例如数据库使用的字符集和比较规则信息等。
+
+
+
+演示：
+
+```sql
+mysql> SHOW DATABASES;                                                                                                                                                                                   
++--------------------+
+| Database           |
++--------------------+
+| dahaizi            |
+| information_schema |
+| mysql              |
+| performance_schema |
+| sys                |
+| xiaohaizi          |
++--------------------+
+6 rows in set (0.001 sec)
+```
+
+/opt/homebrew/var/mysql/目录：
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/image-20260103211006186.png" alt="image-20260103211006186" style="zoom:50%;" />
+
+可以看到，除了`information_schema`这个特殊的系统数据库外，其他的数据库在`数据目录`下都有对应的文件夹。
+
+
+
+### 7.3.2 表信息
+
+表信息包含两部分：
+
+1. 表结构信息（例如表名、表的所有列信息、表的索引、表的字符集和比较规则...）
+2. 表中的数据
+
+
+
+#### InnoDB
+
+**表结构信息的存储**
+
+当我们在一个数据库中创建新表之后，InnoDB和MyISAM都会在对应的数据库子目录下创建一个名为`表名.frm`的文件，专门用于存储表描述信息。
+
+示例：
+
+比方说我们在`dahaizi`数据库下创建一个名为`test`的表：
+
+```sql
+mysql> USE dahaizi;
+Database changed
+
+mysql> CREATE TABLE test (
+    ->     c1 INT
+    -> );
+Query OK, 0 rows affected (0.03 sec)
+```
+
+那在数据库`dahaizi`对应的子目录下就会创建一个名为`test.frm`的用于描述表结构的文件。注意：这个后缀名为.frm的文件是以二进制格式存储的，直接打开会是乱码的。
+
+
+
+**表中的数据的存储**
+
+InnoDB中使用表空间来管理页。
+
+表空间是一个抽象的概念，每个表空间可以被划分为很多个页，表数据就存放在某个表空间的某些页里面。
+
+表空间有不同的类型：
+
+* 系统表空间
+
+  从`MySQL5.5.7`到`MySQL5.6.6`之间的各个版本中，我们表中的数据都会被默认存储到这个 ***系统表空间***。
+
+  系统表空间就对应着数据目录下名为`ibdata1`的文件。
+
+  ![image-20260103201906180](/Users/yutinglai/Documents/note/MySQL-note/assets/image-20260103201906180.png)
+
+  
+
+* 独立表空间
+
+  在`MySQL5.6.6`及之后的版本中，`InnoDB`不会默认的把各个表的数据存储到系统表空间中，而是为每一个表建立一个独立表空间，也就是说我们创建了多少个表，就有多少个独立表空间。
+
+  如果使用独立表空间存储表数据，会在数据库对应的子目录创建一个`表名.ibd`文件，这就是独立表空间对应的文件。
+
+  <img src="/Users/yutinglai/Documents/note/MySQL-note/assets/image-20260103202132984.png" alt="image-20260103202132984" style="zoom:67%;" />
+
+  
+
+* 其它类型的表空间
+
+  * 通用表空间（general tablespace）
+
+  * undo表空间（undo tablespace）
+
+  * 临时表空间（temporary tablespace）
+
+    
+
+* 注意
+
+  * 想手动指定数据是存储到系统表空间/独立表空间，可以通过启动参数`innodb_file_per_table`控制
+
+    该命令只对新建的表起作用，对于已经分配了表空间的表并不起作用。
+
+    ```ini
+    # 0 - 使用系统表空间
+    # 1 - 使用独立表空间
+    [server]
+    innodb_file_per_table=0
+    ```
+
+    
+
+  * 将已经存于系统表空间中的表转移到独立表空间
+
+    ```sql
+    ALTER TABLE 表名 TABLESPACE [=] innodb_file_per_table;
+    # 或
+    ALTER TABLE 表名 TABLESPACE innodb_file_per_table;  # = 号可省略
+    ```
+
+    
+
+  * 已经存在独立表空间的表转移到系统表空间
+
+    ```sql
+    ALTER TABLE 表名 TABLESPACE [=] innodb_system;
+    # 或
+    ALTER TABLE test TABLESPACE innodb_system;  # = 号可省略
+    ```
+
+    
+
+#### MyISAM
+
+`MyISAM`的数据和索引是分开存放的，因此`MyISAM`是用不同的文件来存储数据信息和索引信息。
+
+`MyISAM`没有表空间的概念。
+
+假设我们在`xiaohaizi`目录创建了`test`表，则在数据目录下的`xiaohaizi`数据库对应的子目录中，会创建这三个文件：
+
+```ini
+# 表结构信息
+test.frm
+# 表用户记录
+test.MYD
+# 表索引
+test.MYI
+```
+
+
+
+### 7.3.3 视图信息
+
+**视图是什么**
+
+视图本质就是一个查询语句的别名
+
+```sql
+-- 将复杂的关联查询定义为视图
+CREATE VIEW v_order_details AS
+SELECT o.id, u.name, p.item_name, (o.price * o.count) AS total_fee
+FROM orders o
+JOIN users u ON o.user_id = u.id
+JOIN products p ON o.product_id = p.id;
+
+-- 以后只需要一句话就能查到结果
+SELECT * FROM v_order_details WHERE name = '张三';
+```
+
+
+
+**如何存储视图信息**
+
+如果我们创建了一个视图，则会以`视图名.frm`文件的形式存放在所属数据库的子目录下。
+
+
+
+### 7.3.4 其它
+
+上面所说的是用户自定义的数据如何存放在文件系统。
+
+为了更好地运行程序，数据目录还会存放以下几种文件：
+
+* 服务器进程文件
+
+  当运行一个MySQL服务器程序的时候，MySQL服务器会把自己的进程ID写入到一个文件中。
+
+* 服务器日志文件
+
+  服务器运行过程中产生的各种日志对应的文件。
+
+* SSL密钥文件
+
+  用于客户端和服务端安全通信。
+
+
+
+## 7.4 MySQL系统数据库
+
+我们在执行`SHOW DATABASES;`的时候，除了自己创建的数据库，还有一些自带的系统数据库，这些数据库中会存储MySQL运行过程中所需的信息以及运行状态信息。
+
+```sql
+mysql> SHOW DATABASES;                                                                                                                                                                                   
++--------------------+
+| Database           |
++--------------------+
+| dahaizi            |
+| information_schema |
+| mysql              |
+| performance_schema |
+| sys                |
+| xiaohaizi          |
++--------------------+
+6 rows in set (0.001 sec)
+```
+
+下面分别介绍下系统数据库各自存储的内容：
+
+* `mysql`
+  * MySQL的用户帐户和权限信息。
+  * 运行过程中产生的日志信息。
+  * 帮助信息。
+  * 时区信息。
+  * ...
+* `information_schema`
+  * MySQL服务器维护的所有其他数据库的信息，比如有哪些表、哪些视图、哪些触发器、哪些列、哪些索引等等。
+* `performance_schema`
+  * MySQL服务器运行过程中产生的状态信息，包括统计最近执行了哪些语句，在执行过程的每个阶段都花费了多长时间，内存的使用情况等等信息。
+* `sys`
+  * 通过视图的形式把`information_schema `和`performance_schema`结合起来，让程序员可以更方便的了解`MySQL`服务器的一些性能信息。
+
+
+
+## 7.5 总结
+
+1. 数据目录是MySQL存储「用户创建的数据」以及「MySQL运行时需要的数据」的目录。
+
+   简单来说就是MySQL用于「存储运行过程中产生的数据」的地方。
+
+2. 用`SHOW VARIABLES LIKE 'datadir';`即可查询MySQL服务器的数据目录在哪里。
+
+3. 数据目录存储的信息包含数据库信息、表信息、视图信息这种「用户创建的数据」，以及「MySQL运行时需要的数据」。
+
+   分别是这样存储的（InnoDB）：
+
+   * 数据库信息：当我们创建一个新的数据库，MySQL会1. 在数据目录下创建一个子目录，该子目录以数据库名命名。2. 会在该子目录创建`db.opt`文件，存储数据库的元信息（例如字符集、比较规则等）。
+
+   * 表信息：表信息包含两部分 1. 表结构信息 2. 用户记录。
+
+     1. 表结构信息：当我们创建一个新的表，会在数据库子目录下创建一个`表名.frm`文件，存储表的结构信息（例如表名、所所有列信息等）。
+
+     2. 用户记录：存储在表空间。表空间分为系统表空间/独立表空间。
+
+        ​		`MySQL5.6.6`之前默认用系统表空间存储，则所有用户记录存储在数据目录的`ibdata1`文件中。
+
+        ​		`MySQL5.6.6`及之后默认用独立表空间存储，则在数据库子目录中，会创建`表名.ibd`文件，用于存储用户记录。
+
+   * 视图信息：会以`视图名.frm`文件形式存储在数据库子目录中。
+
+   >  注意：
+   >
+   > 本书都是基于MySQL5.7介绍。
+   >
+   > MySQL8.0开始，数据库、表和视图的元数据都不再存储于db.opt和.frm文件中，而是存储于数据目录下一个名为`mysql.ibd` 的系统表空间。可以理解为8.0版本之后，.frm文件已经彻底消失。
+   >
+   > 8.0版本之后用户记录依然存储于.ibd文件中。
+
+4. 除了用户自定义的数据库，还有`mysql`、`information_schema`、`performance_schema`、`sys`这种自带的系统数据库，用于存储MySQL运行过程中需要的信息（例如用户帐户和权限），以及运行过程中产生的状态信息（例如最近执行的语句花费了所长时间）等等。
+
