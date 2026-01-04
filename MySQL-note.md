@@ -3287,7 +3287,7 @@ mysql> SHOW DATABASES;
 
 ### 页的通用部分
 
-<img src="https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f33c338667~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crjupisqne61uer17ikh6l1v8k9.png-44.9kB" style="zoom:67%;" />
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33c338667~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crjupisqne61uer17ikh6l1v8k9.png-44.9kB" style="zoom:67%;" />
 
 任何类型的页都包含这两部分：
 
@@ -3350,7 +3350,7 @@ mysql> SHOW DATABASES;
 
 每个区都对应一个XDES Entry结构，该结构记录了对应的区的属性。
 
-![image_1crre79uq9971bsdj9s1i0j11en8a.png-96.2kB](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f343654829~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+![image_1crre79uq9971bsdj9s1i0j11en8a.png-96.2kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f343654829~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
 
 * `Segment ID`
 
@@ -3362,7 +3362,7 @@ mysql> SHOW DATABASES;
 
   这个部分可以将若干个`XDES Entry`结构串联成一个链表，`List Node`的结构：
 
-  ![image_1crre8tlh1vmqtfipk663l173q97.png-69.1kB](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f3444b1515~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+  ![image_1crre8tlh1vmqtfipk663l173q97.png-69.1kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f3444b1515~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
 
   如果我们想定位表空间内的某一个位置的话，只需指定页号以及该位置在指定页号中的页内偏移量即可。所以：
 
@@ -3434,7 +3434,7 @@ CREATE TABLE t (
 
 上述所说的每个链表，都对应一个`List Base Node`结构，这是链表的基节点，存储了链表的信息。
 
-![image_1crrehf6i1jsq1j5cubj1mdoh77a4.png-81.6kB](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f388927e1c~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+![image_1crrehf6i1jsq1j5cubj1mdoh77a4.png-81.6kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f388927e1c~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
 
 - `List Length`表明该链表一共有多少节点，
 - `First Node Page Number`和`First Node Offset`表明该链表的头节点在表空间中的位置。
@@ -3464,11 +3464,11 @@ CREATE TABLE t (
 
 ==***每256个区被划分成一组。***==
 
-![image_1cri1nutcorp5ghf5c7vqagt1j.png-71.4kB](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f33c4a1c3a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+![image_1cri1nutcorp5ghf5c7vqagt1j.png-71.4kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33c4a1c3a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
 
 所有组的头几个页面是用于存储组相关的信息的，如图：
 
-![image_1crjo0hl4q8u1dkdofe187b10fa9.png-105.2kB](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f33df9307a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+![image_1crjo0hl4q8u1dkdofe187b10fa9.png-105.2kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33df9307a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
 
 * 表空间的第一组的前三个页是固定的，即extent 0这个区的前三个页是固定的：
   * `FSP_HDR`类型：存储两部分信息：1. 整个表空间的整体属性 2. 本组所有区的属性。注意，每个表空间只有一个`FSP_HDR`类型的页面。
@@ -3529,7 +3529,7 @@ CREATE TABLE t (
 
 就像是每一个区都有一个XSES Entry来记录该区的属性一样，每个段由一个INODE Entry记录其属性信息。
 
-![image_1crrju0cnji91a2fhv91ijb15hgb1.png-111.4kB](https://p1-jj.byteimg.com/tos-cn-i-t2oaga2asx/gold-user-assets/2019/5/1/16a739f4087c4a56~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+![image_1crrju0cnji91a2fhv91ijb15hgb1.png-111.4kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4087c4a56~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
 
 * `Segment ID`：本INODE Entry对应的段的ID。
 
