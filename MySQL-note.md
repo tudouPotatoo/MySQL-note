@@ -1,4 +1,4 @@
-# 1. MySQL的客户端/服务端架构
+# e 1. MySQL的客户端/服务端架构
 
 ## 1.1 如何使用MySQL
 
@@ -3261,7 +3261,7 @@ mysql> SHOW DATABASES;
 
 对于每个独立表空间来说，对应着文件系统中一个名为`表名.ibd`的实际文件。
 
-可以把表空间想象成被切分为许许多多个`页`的池子，当我们想为某个表插入一条记录的时候，就从池子中捞出一个对应的页来把数据写进去。
+可以把表空间想象成被切分为很多个`页`的池子，当我们想为某个表插入一条记录的时候，就从池子中捞出一个对应的页来把数据写进去。
 
 
 
@@ -3307,14 +3307,23 @@ mysql> SHOW DATABASES;
 | `FIL_PAGE_FILE_FLUSH_LSN`          | `8`字节      | 仅在系统表空间的一个页中定义，代表文件至少被刷新到了对应的LSN值 |
 | `FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID` | `4`字节      | 页属于哪个表空间                                             |
 
-有以下几点需要注意：
+注意：
 
-- 表空间中的每一个页都对应着一个页号，也就是`FIL_PAGE_OFFSET`，这个页号由4个字节组成，也就是32个比特位，所以一个表空间最多可以拥有2³²个页，如果按照页的默认大小16KB来算，一个表空间最多支持64TB的数据。表空间的第一个页的页号为0，之后的页号分别是1，2，3...依此类推
-- 某些类型的页可以组成链表，链表中的页可以不按照物理顺序存储，而是根据`FIL_PAGE_PREV`和`FIL_PAGE_NEXT`来存储上一个页和下一个页的页号。需要注意的是，这两个字段主要是为了`INDEX`类型的页，也就是我们之前一直说的数据页建立`B+`树后，为每层节点建立双向链表用的，一般类型的页是不使用这两个字段的。
+- 表空间中的每一个页都对应着一个页号`FIL_PAGE_OFFSET`，占4个字节组成，即32个比特位，所以一个表空间最多可以拥有2³²个页。
+
+  一个页默认占16KB，因此一个表空间最多支持64TB的数据。
+
+  表空间的第一个页的页号为0，之后的页号分别是1，2，3...依此类推
+
+- 数据页会根据`FIL_PAGE_PREV`和`FIL_PAGE_NEXT`两个字段来建立双向链表。
 
 
 
 ## 8.3 独立表空间结构
+
+### 全局图
+
+![独立表空间.drawio](/Users/yutinglai/Documents/note/MySQL-note/assets/独立表空间.drawio-7679238.svg)
 
 ### 区（extent）
 
@@ -3336,11 +3345,11 @@ mysql> SHOW DATABASES;
 
 如果进行范围查询，我们可以定位到符合条件的最左边或最右边的记录，然后沿着双向链表往下找就能够找到所有符合条件的记录。
 
-在进行范围查询的时候，逻辑相邻的页并不是物理相邻，就会导致需要进行大量的随机I/O，相比顺序I/O，随机I/O效率是非常低的。
+由于逻辑相邻的页并不是物理相邻，因此在进行范围查询的时候就会需要进行大量的随机I/O，相比顺序I/O，随机I/O效率是非常低的。
 
 在引入区概念之后
 
-当一个表的数据量很大的时候，MySQL给索引分配空间的时候，会以区为单位分配空间，区就是物理上连续的64个页。当表中数据特别多的时候，还可以一次性分配多个连续的区。虽然可能会造成一定的空间浪费（数据不足填充满整个区），但是消除了很多随机I/O，大大提升性能。
+当一个表的数据量很大的时候，MySQL给索引分配空间的时候，会以区为单位分配空间，区就是物理上连续的64个页。当表中数据特别多的时候，还可以一次性分配多个连续的区。虽然可能会造成一定的空间浪费（数据不足填充满整个区），但是消除了很多随机I/O，因此此时逻辑相邻的页也是物理相邻的，能够大大提升性能。
 
 
 
@@ -3350,30 +3359,24 @@ mysql> SHOW DATABASES;
 
 每个区都对应一个XDES Entry结构，该结构记录了对应的区的属性。
 
-![image_1crre79uq9971bsdj9s1i0j11en8a.png-96.2kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f343654829~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f343654829~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crre79uq9971bsdj9s1i0j11en8a.png-96.2kB" style="zoom:80%;" />
 
 * `Segment ID`
 
-  每一个段都有一个唯一的编号，用ID表示，此处的`Segment ID`字段表示就是该区所在的段。
+  该区所在的段的ID。
 
   当该区被分配给某个段时，该字段的值才有意义。否则该字段的值没有意义。
 
 * `List Node`
 
-  这个部分可以将若干个`XDES Entry`结构串联成一个链表，`List Node`的结构：
-
-  ![image_1crre8tlh1vmqtfipk663l173q97.png-69.1kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f3444b1515~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
-
-  如果我们想定位表空间内的某一个位置的话，只需指定页号以及该位置在指定页号中的页内偏移量即可。所以：
+  如果我们想定位表空间内的某一个位置的话，只需指定「页号」以及该位置在指定页号中的「页内偏移量」即可。所以：
 
   - `Pre Node Page Number`和`Pre Node Offset`的组合就是指向前一个`XDES Entry`的指针
   - `Next Node Page Number`和`Next Node Offset`的组合就是指向后一个`XDES Entry`的指针。
-
   
-
 * `State`
 
-  这个字段表明区的状态，区的四种状态：
+  这个字段表明区的状态，可选值：
 
   | 状态名      | 含义                 |
   | ----------- | -------------------- |
@@ -3382,21 +3385,19 @@ mysql> SHOW DATABASES;
   | `FULL_FRAG` | 没有剩余空间的碎片区 |
   | `FSEG`      | 附属于某个段的区     |
 
-  > 处于`FREE`、`FREE_FRAG`以及`FULL_FRAG`这三种状态的区都是独立的，直属于表空间；而处于`FSEG`状态的区是附属于某个段的。
-
-  
+  > 处于`FREE`、`FREE_FRAG`以及`FULL_FRAG`这三种状态的区都是直属于表空间
+>
+  > 处于`FSEG`状态的区是附属于某个段的
 
 * `Page State Bitmap`
 
-  这个部分共占用16个字节，也就是128个比特位。
+  一个区默认有64个页。
 
-  一个区默认有64个页，这128个比特位被划分为64个部分，每个部分2个比特位，对应区中的一个页。
+  `Page State Bitmap`占用16字节，即128bits，这128bits被分为64部分，每部分2bits，对应区中的一个页。
 
-  比如`Page State Bitmap`部分的第1和第2个比特位对应着区中的第1个页面，第3和第4个比特位对应着区中的第2个页面，依此类推。
+  第一个bit表示对应的页是否是空闲的，第二个bit预留的，还没有用。
 
-  这两个比特位的第一个位表示对应的页是否是空闲的，第二个比特位还没有用。
-
-
+  
 
 #### 5️⃣XDES Entry链表
 
@@ -3408,13 +3409,21 @@ mysql> SHOW DATABASES;
 
 这三个链表是直属于表空间的三个链表。
 
-除了会维护这三个链表之外，InnoDB还会为每个段维护三个链表：
+****
 
-- `FREE`链表：同一个段中，所有页面都是空闲的区对应的`XDES Entry`结构会被加入到这个链表。注意这和直属于表空间的`FREE`链表是两个链表，此处的`FREE`链表是附属于某个段的。
+除了会维护这三个链表之外，InnoDB还会为每个***段***维护三个链表：
+
+- `FREE`链表：同一个段中，所有页面都是空闲的区对应的`XDES Entry`结构会被加入到这个链表。
+
+  注意这和直属于表空间的`FREE`链表是两个链表，此处的`FREE`链表是附属于某个段的。
+
 - `NOT_FULL`链表：同一个段中，仍有空闲空间的区对应的`XDES Entry`结构会被加入到这个链表。
+
 - `FULL`链表：同一个段中，已经没有空闲空间的区对应的`XDES Entry`结构会被加入到这个链表。
 
 一个索引对应两个段，每个段都会维护上述的三个链表。
+
+****
 
 示例：
 
@@ -3428,19 +3437,19 @@ CREATE TABLE t (
 )ENGINE=InnoDB;
 ```
 
-这个t表包含了两个索引：聚簇索引以及二级索引idx_c2。每个索引都对应两个段，因此一共对应四个段，也就是会维护4 * 3 = 12个段的链表。加上直属于表空间的三个链表。整个独立表空间需要维护15个链表。
+这个t表包含了两个索引：聚簇索引以及二级索引`idx_c2`。每个索引都对应两个段，因此一共包含四个段，也就是会维护`4 * 3 = 12`个段链表。加上直属于表空间的三个链表。整个独立表空间需要维护15个链表。
 
-
+****
 
 上述所说的每个链表，都对应一个`List Base Node`结构，这是链表的基节点，存储了链表的信息。
 
-![image_1crrehf6i1jsq1j5cubj1mdoh77a4.png-81.6kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f388927e1c~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f388927e1c~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crrehf6i1jsq1j5cubj1mdoh77a4.png-81.6kB" style="zoom:67%;" />
 
-- `List Length`表明该链表一共有多少节点，
-- `First Node Page Number`和`First Node Offset`表明该链表的头节点在表空间中的位置。
-- `Last Node Page Number`和`Last Node Offset`表明该链表的尾节点在表空间中的位置。
+- `List Length`表明该链表一共有多少节点。
+- `First Node Page Number`和`First Node Offset`共同组成链表头节点的指针。
+- `Last Node Page Number`和`Last Node Offset`共同组成链表尾节点的指针。
 
-一般我们把某个链表对应的`List Base Node`结构放置在表空间中固定的位置，以便于快速定位到某一个链表。
+某个链表对应的`List Base Node`结构一般会放置在表空间中固定的位置，以便于快速定位到某一个链表。
 
 
 
@@ -3448,15 +3457,17 @@ CREATE TABLE t (
 
 刚开始往一个表中插入数据的时候，如果数据量比较少，会先从表空间的`FREE_FRAG`链表尝试获取一个状态为`FREE_FRAG`的区，也就是有空闲空间的碎片区。
 
-如果找到了，那么从该区中取一些零散的页把数据插进去；否则到表空间下申请一个状态为`FREE`的区，也就是空闲的区，把该区的状态变为`FREE_FRAG`，然后从该新申请的区中取一些零散的页把数据插进去。之后不同的段使用零散页的时候都会从该区中取，直到该区中没有空闲空间，然后该区的状态就变成了`FULL_FRAG`，然后移到`FULL_FRAG`链表中。
+如果找到了，那么从该区中取一些零散的页把数据插进去；
+
+否则到表空间下申请一个状态为`FREE`的区，也就是空闲的区，把该区的状态变为`FREE_FRAG`，然后从该新申请的区中取一些零散的页把数据插进去。
+
+之后不同的段使用零散页的时候都会从该区中取，直到该区中没有空闲空间，然后该区的状态就变成了`FULL_FRAG`，然后移到`FULL_FRAG`链表中。
 
 ***当段中数据已经占满了32个零散的页后***，就直接申请完整的区来插入数据了。
 
-再插入数据时，会先获取属于段的`NOT_FULL`链表的头节点，直接把数据插入这个头节点对应的区中即可，如果该区的空间已经被用完，就把该节点移到`FULL`链表中。如果`NOT_FULL`链表已经为空，则从属于段的`FREE`链表取一个区，将其状态变更为`NOT_FULL`，然后移至`NOT_FULL`链表，然后就可以将数据插入到这个区中。
+再插入数据时，会先获取属于段的`NOT_FULL`链表的头节点，直接把数据插入这个头节点对应的区中即可。如果该区的空间已经被用完，就把该节点移到`FULL`链表中。
 
-
-
-
+如果`NOT_FULL`链表已经为空，则从属于段的`FREE`链表取一个区，将其状态变更为`NOT_FULL`，然后移至`NOT_FULL`链表，然后就可以将数据插入到这个区中。
 
 
 
@@ -3464,27 +3475,11 @@ CREATE TABLE t (
 
 ==***每256个区被划分成一组。***==
 
-![image_1cri1nutcorp5ghf5c7vqagt1j.png-71.4kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33c4a1c3a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
-
-所有组的头几个页面是用于存储组相关的信息的，如图：
-
-![image_1crjo0hl4q8u1dkdofe187b10fa9.png-105.2kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33df9307a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
-
-* 表空间的第一组的前三个页是固定的，即extent 0这个区的前三个页是固定的：
-  * `FSP_HDR`类型：存储两部分信息：1. 整个表空间的整体属性 2. 本组所有区的属性。注意，每个表空间只有一个`FSP_HDR`类型的页面。
-  * `IBUF_BITMAP`类型：存储本组所有的区的所有页面关于`INSERT BUFFER`的信息。
-  * `INODE`类型：这个类型的页面存储了许多称为`INODE`的数据结构。
-* 其余各个组的前两个页是固定的：
-  * `XDES`类型：存储本组所有区的属性。`FSP_HDR`类型和`XDES`类型作用类似，只不过`FSP_HDR`类型的页面还会额外存储所在表空间的整体属性的信息。
-  * `IBUF_BITMAP`类型：上面介绍过。
-
-
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33c4a1c3a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1cri1nutcorp5ghf5c7vqagt1j.png-71.4kB" style="zoom:77%;" />
 
 ### 段（segment）
 
-#### 为什么要有段
-
-我们上面提到了区的概念。
+#### 1️⃣为什么要有段
 
 如果所有产生的非叶子节点索引数据以及叶子节点用户记录数据都存在相同的区中，会存在这样的情况：
 
@@ -3498,7 +3493,9 @@ CREATE TABLE t (
 
 为了避免出现这样的问题，InnoDB对B+树的叶子节点和非叶子节点分开存储。叶子节点有单独的区，非叶子节点也有单独的区。***存放叶子节点的区的集合为一个段，存放非叶子节点的区的集合也为一个段***，也就是说一个索引会生成2个段，一个叶子节点段，一个非叶子节点段。
 
-#### 段以区为单位申请存储空间会造成空间浪费
+
+
+#### 2️⃣段以区为单位申请存储空间会造成空间浪费
 
 我们知道一个索引，会生成两个段，一个是用来存储叶子节点数据的段，一个是用来存储非叶子节点数据的段。
 
@@ -3512,36 +3509,607 @@ CREATE TABLE t (
 
 此后为某个段分配存储空间的策略是这样的：
 
-- 在刚开始向表中插入数据的时候，段是从某个碎片区以单个页面为单位来分配存储空间的。
+- 在刚开始向表中插入数据的时候，段是从某个碎片区***以单个页面为单位***来分配存储空间的。
 - 当某个段已经占用了32个碎片区页面之后，就会以完整的区为单位来分配存储空间。
 
-所以现在段不能仅定义为是某些区的集合，更精确的应该是某些零散的页面以及一些完整的区的集合。
-
-#### INODE Entry
-
-段不是表空间某一个连续的物理区域，而是一个逻辑上的概念。
-
-一个索引包含两个段，一个段指的是存放叶子节点的页和区的集合，另一个段指的是存放非叶子节点的页和区的集合。
-
-因为给一个表分配空间的时候，如果数据量很小，会先从属于表空间的`FREE_FRAG`链表分配一些页来存储数据。数据达到一定量，才会以区为单位分配存储空间。因此段是由若干个零散的页面以及一些完整的区组成的。
+**所以现在段不能仅定义为是某些区的集合，更精确的应该是某些零散的页面以及一些完整的区的集合。**
 
 
 
-就像是每一个区都有一个XSES Entry来记录该区的属性一样，每个段由一个INODE Entry记录其属性信息。
+#### 3️⃣INODE Entry
 
-![image_1crrju0cnji91a2fhv91ijb15hgb1.png-111.4kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4087c4a56~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+就像是每一个区都有一个`XDES Entry`来记录该区的属性一样，每个段有一个`INODE Entry`记录其属性信息。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4087c4a56~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crrju0cnji91a2fhv91ijb15hgb1.png-111.4kB" style="zoom:85%;" />
 
 * `Segment ID`：本INODE Entry对应的段的ID。
 
-* `NOT_FULL_N_USED`：`NOT_FULL`链表中已经使用了多少个页面。
+* `NOT_FULL_N_USED`：NOT_FULL链表中已经使用了多少个页面。
 
-* `List Base Node`：分别为段的`FREE`链表、`NOT_FULL`链表、`FULL`链表的`List Base Node`。
+* `List Base Node`：分别为段的FREE链表、NOT_FULL链表、FULL链表的List Base Node。
 
-* `Magic Number`：标记这个`INODE Entry`是否已经被初始化了（初始化的意思就是把各个字段的值都填进去了）。如果这个数字是值的`97937874`，表明该`INODE Entry`已经初始化，否则没有被初始化。
+* `Magic Number`：标记这个INODE Entry是否已经被初始化了（初始化的意思就是把各个字段的值都填进去了）。如果这个数字是97937874，表明该INODE Entry已经初始化，否则没有被初始化。
 
-* `ragment Array Entry`：因为一个段由若干零散的页面和一些完整的区组成，这些完整的区的信息我们可以通过三个链表获取到，而`Fragment Array Entry`就是用于存储这些零散页面的信息。每个`Fragment Array Entry`结构都对应着一个零散的页面，这个结构一共4个字节，表示一个零散页面的页号。
+* `Fragment Array Entry`：因为一个段由若干零散的页面和一些完整的区组成，这些区的信息可以通过三个链表获取到，而Fragment Array Entry就是用于存储这些零散页面的信息。每个Fragment Array Entry结构都对应着一个零散的页面，这个结构占4个字节，记录一个零散页面的页号。
 
   
+
+### 各类型页面详细介绍
+
+整个表空间由很多个区组成，每256个区划分为一组。
+
+所有组的头几个页面都是用于存储组的属性信息，如图：
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f33df9307a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crjo0hl4q8u1dkdofe187b10fa9.png-105.2kB" style="zoom:80%;" />
+
+* 表空间的第0组的前3个页是固定的，即extent 0这个区的前三个页：
+  * `FSP_HDR`类型：存储 1. 整个表空间的整体属性 2. 本组所有区的属性。每个表空间只有一个FSP_HDR页面。
+  * `IBUF_BITMAP`类型：存储本组所有的区的所有页面关于INSERT BUFFER的信息。
+  * `INODE`类型：存储INODE Entry信息。
+* 其余各个组的前两个页是固定的：
+  * `XDES`类型：存储本组所有区的属性。FSP_HDR页面和XDES页面作用类似，只不过FSP_HDR页面还会额外存储所在表空间的整体属性的信息。
+  * `IBUF_BITMAP`类型：上面介绍过。
+
+
+
+下面对各个类型的页面展开介绍。
+
+
+
+#### 1️⃣FSP_HDR
+
+这是第0个组的第0个页面，也是表空间的第0个页面，其页号为0。
+
+它存储了「表空间的一些整体属性」以及「第一个组内256个区的对应的XDES Entry结构」。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4733af475~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crmfvigk938c8h1hahglr15329.png-146.8kB" style="zoom:80%;" />
+
+从图中可以看出，一个完整的FSP_HDR类型的页面大致由5个部分组成：
+
+| 名称                | 中文名       | 占用空间大小 | 简单描述                       |
+| ------------------- | ------------ | ------------ | ------------------------------ |
+| `File Header`       | 文件头部     | `38`字节     | 页的一些通用信息               |
+| `File Space Header` | 表空间头部   | `112`字节    | 表空间的一些整体属性信息       |
+| `XDES Entry`        | 区描述信息   | `10240`字节  | 存储本组256个区对应的属性信息  |
+| `Empty Space`       | 尚未使用空间 | `5986`字节   | 用于页结构的填充，没啥实际意义 |
+| `File Trailer`      | 文件尾部     | `8`字节      | 校验页是否完整                 |
+
+重点看File Space Header和XDES Entry这两个部分：
+
+##### File Space Header部分
+
+该部分用于存储表空间的整体属性，如图：
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f47508ede5~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crrp2qp310rc10fd33ch716hcp.png-148.1kB" style="zoom: 77%;" />
+
+| 名称                                      | 占用空间大小 | 描述                                                         |
+| ----------------------------------------- | ------------ | ------------------------------------------------------------ |
+| `Space ID`                                | `4`字节      | 表空间的ID                                                   |
+| `Not Used`                                | `4`字节      | 这4个字节未被使用，可以忽略                                  |
+| `Size`                                    | `4`字节      | 当前表空间占有的页面数                                       |
+| `FREE Limit`                              | `4`字节      | 尚未被初始化的最小页号，大于或等于这个页号的区对应的XDES Entry结构都没有被加入FREE链表 |
+| `Space Flags`                             | `4`字节      | 表空间的一些占用存储空间比较小的属性                         |
+| `FRAG_N_USED`                             | `4`字节      | FREE_FRAG链表中已使用的页面数量                              |
+| `List Base Node for FREE List`            | `16`字节     | FREE链表的基节点                                             |
+| `List Base Node for FREE_FRAG List`       | `16`字节     | FREE_FRAG链表的基节点                                        |
+| `List Base Node for FULL_FRAG List`       | `16`字节     | FULL_FRAG链表的基节点                                        |
+| `Next Unused Segment ID`                  | `8`字节      | 当前表空间中下一个未使用的 Segment ID                        |
+| `List Base Node for SEG_INODES_FULL List` | `16`字节     | SEG_INODES_FULL链表的基节点                                  |
+| `List Base Node for SEG_INODES_FREE List` | `16`字节     | SEG_INODES_FREE链表的基节点                                  |
+
+* List Base Node for FREE List、List Base Node for FREE_FRAG List、List Base Node for FULL_FRAG List
+
+  属于表空间的三个链表的基节点。
+
+* FREE Limit
+
+  在一开始创建表空间的时候，可以为表空间申请一个很大的空间，InnoDB只把部分空闲区加入FREE链表，等FREE链表中的XDES Entry结构对应的区不够用的时候，再把之前没有加入FREE链表的空闲区对应的XDES Entry结构加入FREE链表。
+
+  FREE Limit 这个字段表示的页号之前的区都被初始化了，之后的区尚未被初始化。
+
+* Next Unused Segment ID
+
+  当前表空间最大段ID的下一个ID，当创建一个新段的时候，其ID设为该值即可。
+
+* Space Flags
+
+  用4字节记录了一些占用空间非常小的属性
+
+  | 标志名称        | 占用的空间（单位：bit） | 描述                                     |
+  | --------------- | ----------------------- | ---------------------------------------- |
+  | `POST_ANTELOPE` | 1                       | 表示文件格式是否大于`ANTELOPE`           |
+  | `ZIP_SSIZE`     | 4                       | 表示压缩页面的大小                       |
+  | `ATOMIC_BLOBS`  | 1                       | 表示是否自动把值非常长的字段放到BLOB页里 |
+  | `PAGE_SSIZE`    | 4                       | 页面大小                                 |
+  | `DATA_DIR`      | 1                       | 表示表空间是否是从默认的数据目录中获取的 |
+  | `SHARED`        | 1                       | 是否为共享表空间                         |
+  | `TEMPORARY`     | 1                       | 是否为临时表空间                         |
+  | `ENCRYPTION`    | 1                       | 表空间是否加密                           |
+  | `UNUSED`        | 18                      | 没有使用到的比特位                       |
+
+* List Base Node for SEG_INODES_FULL List、List Base Node for SEG_INODES_FREE List
+
+  表空间中所有段的INODE Entry结构会集中存放到一个类型为INODE的页中。
+
+  如果表空间中的段特别多，则会有很多个INODE Entry结构，可能一个页放不下，这些INODE类型的页会组成两种列表：
+
+  - `SEG_INODES_FULL`链表，该链表中的INODE类型的页面都已经被INODE Entry结构填充满了，没空闲空间存放额外的INODE Entry了。
+  - `SEG_INODES_FREE`链表，该链表中的INODE类型的页面仍有空闲空间来存放INODE Entry结构。
+
+
+
+##### XDES Entry部分
+
+一个XDES Entry结构的大小是40字节，但是一个页面的大小有限，只能存放有限个XDES Entry结构，所以才把256个区划分成一组，在每组的第一个页面中存放256个XDES Entry结构。
+
+
+
+#### 2️⃣XDES类型
+
+XDES类型和FSP_HDR类型的页面是类似的。
+
+XDES类型和FSP_HDR类型都是组的第0个页，表空间的第0个组的第0个页是FSP_HDR类型，其余所有组的第0个页都是XDES类型。
+
+XDES类型和FSP_HDR类型都会存储组中的所有区的XDES Entry结构。
+
+区别只在于由于FSP_HDR类型是整个表空间的第0个页，因此还需要额外存储表空间整体属性即File Space Header部分。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f475c0ec2a~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1cs3vmoii1h971aje1iveack1l109.png-149.5kB" style="zoom:67%;" />
+
+
+
+#### 3️⃣IBUF_BITMAP类型
+
+每个组的第1个页面都是IBUF_BITMAP类型，用于记录有关Change Buffer的信息。
+
+
+
+#### 4️⃣INODE类型
+
+表空间第0个分组的第2个页面是INODE类型。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16ef3a8df380813e~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="img" style="zoom:57%;" />
+
+一个`INODE`类型的页面是由这几部分构成的：
+
+| 名称                            | 中文名       | 占用空间大小 | 简单描述                                   |
+| ------------------------------- | ------------ | ------------ | ------------------------------------------ |
+| `File Header`                   | 文件头部     | `38`字节     | 页的一些通用信息                           |
+| `List Node for INODE Page List` | 通用链表节点 | `12`字节     | 存储上一个INODE页面和下一个INODE页面的指针 |
+| `INODE Entry`                   | 段描述信息   | `16320`字节  |                                            |
+| `Empty Space`                   | 尚未使用空间 | `6`字节      | 用于页结构的填充，没啥实际意义             |
+| `File Trailer`                  | 文件尾部     | `8`字节      | 校验页是否完整                             |
+
+重点关注`List Node for INODE Page List`和`INODE Entry`这两个部分：
+
+* `INODE Entry`
+
+  我们知道每个段都对应着一个INODE Entry来存储其属性信息。
+
+  INODE页面就用于存储表空间中的所有段的INODE Entry。
+
+  每个INODE Entry占用192字节，一个页面里可以存储`85`个这样的结构。
+
+  不够用时，InnoDB 会再申请一个新的 INODE 页面，并通过链表把它们串起来。
+
+  <img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4087c4a56~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crrju0cnji91a2fhv91ijb15hgb1.png-111.4kB" style="zoom:85%;" />
+
+* `List Node for INODE Page List`
+
+  因为INODE类型的页只能存85个INODE Entry，当一个表空间的段数超过85，InnoDB 会再申请一个新的 INODE 页面，并通过链表把它们串起来。
+
+  为了便于管理，InnoDB把这些INODE类型的页面串联成两个链表：
+
+  - `SEG_INODES_FULL`链表：该链表中的INODE页面中已经没有空闲空间来存储额外的INODE Entry了。
+  - `SEG_INODES_FREE`链表：该链表中的INODE页面中还有空闲空间来存储额外的INODE Entry了。
+
+  这两个链表的基节点是存在了FSP_HDR页面的File Space Header部分中。
+
+  `List Node for INODE Page List`内部就是存储了两个指针，分别指向当前INODE页面的前一个页面和后一个页面。
+
+  以后每当我们新创建一个段（创建索引时就会创建段）时，都会创建一个INODE Entry与之对应，存储INODE Entry的大致过程就是这样的：
+
+  - 先看看`SEG_INODES_FREE`链表是否为空，如果不为空，直接从该链表中获取一个节点，然后把该INODE Entry结构放到该页面中。当该页面中无剩余空间时，就把该页放到`SEG_INODES_FULL`链表中。
+  - 如果`SEG_INODES_FREE`链表为空，则需要从表空间的FREE_FRAG链表中申请一个页面，修改该页面的类型为`INODE`，把该页面放到`SEG_INODES_FREE`链表中，与此同时把该INODE Entry结构放入该页面。
+
+
+
+### 怎么找到索引的段的INODE Entry
+
+如果我们想要往一个索引插入数据，定位到根节点之后，通过二分查找，一层层定位到最终的叶子节点。
+
+如果这个叶子节点空间不足，则需要申请新的页来存放数据。
+
+申请新页，就需要定位到索引对应的段的INODE Entry，找到其中的`Fragment Array Entry`以及三个链表的List Base Node，才能够获得空页，来存放数据。
+
+我们只知道INODE Entry存放在INODE页中，那我们怎么找到一个索引对应的INODE Entry呢？难道遍历整个INODE页？
+
+当然不是，在B+树的根节点，存放了两个指针：
+
+`INDEX类型`的页的`Page Header`部分包含这两个属性：
+
+| 名称                | 占用空间大小 | 描述                                       |
+| ------------------- | ------------ | ------------------------------------------ |
+| ...                 | ...          | ...                                        |
+| `PAGE_BTR_SEG_LEAF` | `10`字节     | B+树叶子段的头部信息，仅在B+树的根页定义   |
+| `PAGE_BTR_SEG_TOP`  | `10`字节     | B+树非叶子段的头部信息，仅在B+树的根页定义 |
+
+这两个指针是`Segment Header`结构
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f48c4472a3~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1d6a74gu41fuqcqm1htri771d1k16.png-65.1kB" style="zoom: 50%;" />
+
+| 名称                              | 占用字节数 | 描述                              |
+| --------------------------------- | ---------- | --------------------------------- |
+| `Space ID of the INODE Entry `    | `4`        | INODE Entry结构所在的表空间ID     |
+| `Page Number of the INODE Entry ` | `4`        | INODE Entry结构所在的页面页号     |
+| `Byte Offset of the INODE Ent`    | `2`        | INODE Entry结构在该页面中的偏移量 |
+
+`PAGE_BTR_SEG_LEAF`记录着叶子节点段的INODE Entry结构的具体地址：是哪个表空间的哪个页面的哪个偏移量。
+
+`PAGE_BTR_SEG_TOP`记录着非叶子节点段的INODE Entry结构的具体地址。
+
+
+
+也就是说，在索引的根节点中，就可以获得对应的段的`INODE Entry`结构的地址。
+
+
+
+### 独立表空间对应的文件大小
+
+独立表空间对应着数据目录下名为`表名.ibd`的文件，这是自拓展文件，随着表中数据的增多，表空间对应的文件也逐渐增大。
+
+
+
+## 8.4 系统表空间
+
+系统表空间的结构和独立表空间基本类似，只不过由于整个MySQL进程只有一个系统表空间，在系统表空间中会额外记录一些「有关整个系统信息」的页面，所以会比独立表空间多出一些记录这些信息的页面。
+
+系统表空间的`表空间 ID`（Space ID）是`0`。
+
+### 全局图
+
+![系统表空间.drawio](/Users/yutinglai/Documents/note/MySQL-note/assets/系统表空间.drawio-7679249.svg)
+
+### 系统表空间的整体结构
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4911220d8~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1csbied27ohe1rgg32gquulplm.png-147.4kB" style="zoom:75%;" />
+
+系统表空间和独立表空间的前三个页面（页号分别为`0`、`1`、`2`，类型分别是`FSP_HDR`、`IBUF_BITMAP`、`INODE`）的类型是一致的，只是页号为`3`～`7`的页面是系统表空间特有的：
+
+| 页号 | 页面类型  | 英文描述               | 描述                        |
+| ---- | --------- | ---------------------- | --------------------------- |
+| `3`  | `SYS`     | Insert Buffer Header   | 存储Insert Buffer的头部信息 |
+| `4`  | `INDEX`   | Insert Buffer Root     | 存储Insert Buffer的根页面   |
+| `5`  | `TRX_SYS` | Transction System      | 事务系统的相关信息          |
+| `6`  | `SYS`     | First Rollback Segment | 第一个回滚段的页面          |
+| `7`  | `SYS`     | Data Dictionary Header | 数据字典头部信息            |
+
+除此之外，系统表空间的`extent 1`和`extent 2`这两个区被称为`Doublewrite buffer`双写缓冲区。
+
+
+
+### InnoDB数据字典
+
+#### 1️⃣数据字典是什么
+
+存了什么：它主要记录了数据库对象的元数据，包括但不限于：
+
+- **表的信息：** 表名、列数、所属表空间 ID（Space ID）。
+- **列的信息：** 列名、数据类型、长度、是否为空、列的顺序。
+- **索引信息：** 索引名、索引类型（聚簇索引还是二级索引）、***每个索引对应的根节点（Root Page）的页号***。
+- **段（Segment）信息：** 每个索引对应的叶子节点段和非叶子节点段的 INODE 位置。
+
+
+
+#### 2️⃣数据字典是如何存储的
+
+存储在内部系统表。InnoDB存储引擎定义了一些内部系统表（internal system table）来记录这些这些`元数据`，这些系统表也被称为`数据字典`：
+
+| 表名               | 描述                                                       |
+| ------------------ | ---------------------------------------------------------- |
+| `SYS_TABLES`       | 整个InnoDB存储引擎中所有的表的信息                         |
+| `SYS_COLUMNS`      | 整个InnoDB存储引擎中所有的列的信息                         |
+| `SYS_INDEXES`      | 整个InnoDB存储引擎中所有的索引的信息                       |
+| `SYS_FIELDS`       | 整个InnoDB存储引擎中所有的索引对应的列的信息               |
+| `SYS_FOREIGN`      | 整个InnoDB存储引擎中所有的外键的信息                       |
+| `SYS_FOREIGN_COLS` | 整个InnoDB存储引擎中所有的外键对应列的信息                 |
+| `SYS_TABLESPACES`  | 整个InnoDB存储引擎中所有的表空间信息                       |
+| `SYS_DATAFILES`    | 整个InnoDB存储引擎中所有的表空间对应文件系统的文件路径信息 |
+| `SYS_VIRTUAL`      | 整个InnoDB存储引擎中所有的虚拟生成列的信息                 |
+
+最核心的四张表分别是：
+
+1. **`SYS_TABLES`**: 存储表名与 Space ID 的对应关系。
+2. **`SYS_COLUMNS`**: 存储列的定义。
+3. **`SYS_INDEXES`**: 存储索引信息，包括该索引根节点所在的 **Page Number**。
+4. **`SYS_FIELDS`**: 存储索引具体包含哪些列。
+
+
+
+##### SYS_TABLES表
+
+| 列名         | 描述                                             |
+| ------------ | ------------------------------------------------ |
+| `NAME`       | 表的名称                                         |
+| `ID`         | InnoDB存储引擎中每个表都有一个唯一的ID           |
+| `N_COLS`     | 该表拥有列的个数                                 |
+| `TYPE`       | 表的类型，记录了一些文件格式、行格式、压缩等信息 |
+| `MIX_ID`     | 已过时，忽略                                     |
+| `MIX_LEN`    | 表的一些额外的属性                               |
+| `CLUSTER_ID` | 未使用，忽略                                     |
+| `SPACE`      | 该表所属表空间的ID                               |
+
+这个`SYS_TABLES`表有两个索引：
+
+- 以`NAME`列为主键的聚簇索引
+- 以`ID`列建立的二级索引
+
+
+
+##### SYS_COLUMNS表
+
+| 列名       | 描述                                                         |
+| ---------- | ------------------------------------------------------------ |
+| `TABLE_ID` | 该列所属表对应的ID                                           |
+| `POS`      | 该列在表中是第几列                                           |
+| `NAME`     | 该列的名称                                                   |
+| `MTYPE`    | main data type，主数据类型，就是那堆INT、CHAR、VARCHAR、FLOAT、DOUBLE之类的东东 |
+| `PRTYPE`   | precise type，精确数据类型，就是修饰主数据类型的那堆东东，比如是否允许NULL值，是否允许负数啥的 |
+| `LEN`      | 该列最多占用存储空间的字节数                                 |
+| `PREC`     | 该列的精度，不过这列貌似都没有使用，默认值都是0              |
+
+这个`SYS_COLUMNS`表只有一个聚集索引：
+
+- 以`(TABLE_ID, POS)`列为主键的聚簇索引
+
+
+
+##### SYS_INDEXES表
+
+| 列名              | 描述                                                         |
+| ----------------- | ------------------------------------------------------------ |
+| `TABLE_ID`        | 该索引所属表对应的ID                                         |
+| `ID`              | InnoDB存储引擎中每个索引都有一个唯一的ID                     |
+| `NAME`            | 该索引的名称                                                 |
+| `N_FIELDS`        | 该索引包含列的个数                                           |
+| `TYPE`            | 该索引的类型，比如聚簇索引、唯一索引、更改缓冲区的索引、全文索引、普通的二级索引等等各种类型 |
+| `SPACE`           | 该索引根页面所在的表空间ID                                   |
+| `PAGE_NO`         | 该索引根页面所在的页面号                                     |
+| `MERGE_THRESHOLD` | 如果页面中的记录被删除到某个比例，就把该页面和相邻页面合并，这个值就是这个比例 |
+
+这个`SYS_INDEXES`表只有一个聚集索引：
+
+- 以`(TABLE_ID, ID)`列为主键的聚簇索引
+
+
+
+##### SYS_FIELDS表
+
+| 列名       | 描述                         |
+| ---------- | ---------------------------- |
+| `INDEX_ID` | 该索引列所属的索引的ID       |
+| `POS`      | 该索引列在某个索引中是第几列 |
+| `COL_NAME` | 该索引列的名称               |
+
+这个`SYS_FIELDS`表只有一个聚集索引：
+
+- 以`(INDEX_ID, POS)`列为主键的聚簇索引
+
+
+
+只要有了上述4个内部系统表，就可以获取其他系统表以及用户定义的表的所有元数据。
+
+比方说我们想看看`SYS_TABLESPACES`这个系统表里存储了哪些表空间以及表空间的属性，那就可以：
+
+- 到`SYS_TABLES`表中根据表名定位到具体的记录，就可以获取到`SYS_TABLESPACES`表的`TABLE_ID`
+- 使用这个`TABLE_ID`到`SYS_COLUMNS`表中就可以获取到属于该表的所有列的信息。
+- 使用这个`TABLE_ID`还可以到`SYS_INDEXES`表中获取所有的索引的信息，索引的信息中包括对应的`INDEX_ID`，还记录着该索引对应的`B+`数根页面是哪个表空间的哪个页面。
+- 使用`INDEX_ID`就可以到`SYS_FIELDS`表中获取所有索引列的信息。
+
+
+
+#### 3️⃣一个数据字典具体是怎么发挥作用的例子
+
+如果我们要执行select语句
+
+1. 要根据索引名去SYS_INDEXES内部系统表确定索引根节点的页号
+2. 拿到根节点的页号之后，才能开展后续的二分查找，找到最终目标的叶子节点
+
+
+
+#### 4️⃣怎么找到数据字典
+
+通过数据字典我们可以找到其他所有表的信息，那怎么找到数据字典？
+
+类似于 我根据地图能找到路，那在哪里可以找到地图呢？
+
+数据字典是所有数据的元数据，那问题就转化为怎么找到元数据的元数据？
+
+其实数据字典的元数据就是所谓的数据字典头部，数据字典头部中记录了数据字典这几张表的根节点地址等信息。
+
+数据字典头部是一个具体的存储页面（Page），它固定在 系统表空间（ibdata1） 的 **Page 7**（也就是第 8 个页面，从 0 开始算）。
+
+因为它的位置是硬编码在代码里的，所以 MySQL 启动时不需要找任何人，直接读取 `ibdata1` 的偏移量 16KB×7 就能找到它。
+
+
+
+#### 5️⃣ 数据字典头部页面
+
+Data Dictionary Header页面，是系统表空间页号为7的页，用于存储数据字典头部信息。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16efe1e5a01aeac9~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="img" style="zoom: 50%;" />
+
+Data Dictionary Header页面的组成：
+
+| 名称                     | 中文名           | 占用空间大小 | 简单描述                                                     |
+| ------------------------ | ---------------- | ------------ | ------------------------------------------------------------ |
+| `File Header`            | 文件头部         | `38`字节     | 页的一些通用信息                                             |
+| `Data Dictionary Header` | 数据字典头部信息 | `56`字节     | 记录一些基本系统表的根页面位置以及InnoDB存储引擎的一些全局信息 |
+| `Segment Header`         | 段头部信息       | `10`字节     | 记录本页面所在段对应的INODE Entry位置信息                    |
+| `Empty Space`            | 尚未使用空间     | `16272`字节  | 用于页结构的填充，没啥实际意义                               |
+| `File Trailer`           | 文件尾部         | `8`字节      | 校验页是否完整                                               |
+
+可以看到这个页面里有`Segment Header`部分，意味着InnoDB把Data Dictionary Header页面当成一个段来分配存储空间，可以称为`数据字典段`。由于目前我们需要记录的数据字典信息非常少（可以看到`Data Dictionary Header`部分仅占用了56字节），所以该段只有一个碎片页，也就是页号为`7`的这个页。
+
+
+
+`Data Dictionary Header`部分的各个字段：
+
+- `Max Row ID`：如果我们不定义主键，也没有定义Unique列，那么`InnoDB`存储引擎会自动生成一个名为`row_id`的列作为主键。
+
+  因为它是主键，所以每条记录的`row_id`列的值不能重复。原则上只要一个表中的`row_id`列不重复就可以了，也就是说表a和表b拥有一样的`row_id`列也没关系，不过InnoDB只提供了这个`Max Row ID`字段，不论哪个拥有`row_id`列的表插入一条记录时，该记录的`row_id`列的值就是`Max Row ID`对应的值，然后再把`Max Row ID`对应的值加1，也就是说这个`Max Row ID`是全局共享的。
+
+- `Max Table ID`：InnoDB存储引擎中的所有的表都对应一个唯一的ID，每次新建一个表时，就会把本字段的值作为该表的ID，然后自增本字段的值。
+
+- `Max Index ID`：InnoDB存储引擎中的所有的索引都对应一个唯一的ID，每次新建一个索引时，就会把本字段的值作为该索引的ID，然后自增本字段的值。
+
+- `Max Space ID`：InnoDB存储引擎中的所有的表空间都对应一个唯一的ID，每次新建一个表空间时，就会把本字段的值作为该表空间的ID，然后自增本字段的值。
+
+-   `Mix ID Low(Unused)`：这个字段没用，跳过。
+
+- `Root of SYS_TABLES clust index`：本字段代表`SYS_TABLES`表聚簇索引的根页面的页号。
+
+- `Root of SYS_TABLE_IDS sec index`：本字段代表`SYS_TABLES`表为`ID`列建立的二级索引的根页面的页号。
+
+- `Root of SYS_COLUMNS clust index`：本字段代表`SYS_COLUMNS`表聚簇索引的根页面的页号。
+
+- `Root of SYS_INDEXES clust index`本字段代表`SYS_INDEXES`表聚簇索引的根页面的页号。
+
+- `Root of SYS_FIELDS clust index`：本字段代表`SYS_FIELDS`表聚簇索引的根页面的页号。
+
+- `Unused`：这4个字节没用，跳过。
+
+
+
+## 8.5 information_schema系统数据库
+
+用户是不能直接访问`InnoDB`的这些内部系统表的，为了用户能够查看表的内容以便于分析问题，系统数据库`information_schema`中提供了一些以`innodb_sys`开头的表：
+
+```sql
+mysql> USE information_schema;
+Database changed
+
+mysql> SHOW TABLES LIKE 'innodb_sys%';
++--------------------------------------------+
+| Tables_in_information_schema (innodb_sys%) |
++--------------------------------------------+
+| INNODB_SYS_DATAFILES                       |
+| INNODB_SYS_VIRTUAL                         |
+| INNODB_SYS_INDEXES                         |
+| INNODB_SYS_TABLES                          |
+| INNODB_SYS_FIELDS                          |
+| INNODB_SYS_TABLESPACES                     |
+| INNODB_SYS_FOREIGN_COLS                    |
+| INNODB_SYS_COLUMNS                         |
+| INNODB_SYS_FOREIGN                         |
+| INNODB_SYS_TABLESTATS                      |
++--------------------------------------------+
+10 rows in set (0.00 sec)
+```
+
+在`information_schema`数据库中的这些以`INNODB_SYS`开头的表并不是真正的内部系统表（内部系统表是前面提到的以`SYS`开头的那些表）。
+
+存储引擎启动时会读取这些以`SYS`开头的系统表，然后填充到这些以`INNODB_SYS`开头的表中。
+
+可以理解为，你不能看内部系统表。但是为了便于你排查问题，InnoDB提供了一个供外部访问的系统表，InnoDB会在启动的时候读内部系统表中的内容然后填充到供外部访问的系统表。
+
+> 外部系统表也只可读，为什么还要专门搞个外部系统表？而不是直接对内部系统表只读即可？
+>
+> 1. 语言不通。
+>
+>    内部系统表是底层C++的结构体，并不是SQL表格形式存储。
+>
+>    所以需要转化为外部系统表SQL表格形式存储才能便于给用户看。
+>
+> 2. 并发问题。
+>
+>    内部系统表会被存储引擎频繁读写，它记录的是SQL任务的实时状态。
+>
+>    如果用户频繁查询，则为了保证读到的数据的准确性，涉及到加锁的问题，影响性能。
+
+
+
+
+
+## 8.7 查询、修改 玩转表空间
+
+> 在最新版本的 MySQL（包括广泛使用的 8.0、8.4 以及 9.0+）中，默认情况下都是使用「独立表空间」来存储用户表的数据和索引的，因此下面以独立表空间为例。
+
+
+
+### INSERT全流程
+
+如果使用的是独立表空间，INSERT执行的全流程：
+
+```sql
+INSERT INTO table (id, name) VALUES (100, 'Gemini');
+```
+
+1. 根据数据字典找到table表聚簇索引的根页面页号
+
+2. 根据主键值在页目录二分查找，找到下一层节点的页号
+
+3. 沿着指针层层向下，直到到达最底层的叶子节点
+
+4. 到达目标叶子节点页后，InnoDB 检查该页的 `Free Space`
+
+5. 如果空间充足：直接在页内插入记录
+
+6. 如果空间不足，则需要申请新页
+
+7. 从根节点页面的`Page Header`部分，获取`PAGE_BTR_SEG_LEAF`叶子段和`PAGE_BTR_SEG_TOP`非叶子段两个段的`INODE Entry`地址。
+
+8. 先去`INODE Entry`的`Fragment Array`看有没有还有空闲空间的页可以用，如果有，则直接使用。
+
+9. 如果没有，则前往表空间的第0个区的第0个页`FSP_HDR`页，找到`File Space Header`的`List Base Node for FREE_FRAG List`，即`FREE_FRAG`链表的基节点。
+
+10. 尝试从`FREE_FRAG`链表获取状态为`FREE_FRAG`的区，即有空闲空间的碎片区。如果找到了，则从该区中取出一些零碎的页存储插入的数据。
+
+11. 如果找不到，则找到`File Space Header`的`List Base Node for FREE List`部分，即`FREE`链表的基节点。
+
+12. 从`FREE`链表找到一个区，将其状态转化为`FREE_FRAG`，并转移到`FREE_FRAG`链表。从该区中取出一些零碎的页存储插入的数据。
+
+    之后不同的段需要获取碎片区都可以从该区中获取，直到这个区没有空闲空间，则将其状态变为`FULL_FRAG`，并移入到`FULL_FRAG List`。
+
+13. 将碎片页的页号填入`INODE Entry`中的 `Fragment Array`。
+
+    注意，不同段是不能共享同一个碎片页的。虽然共享一个碎片区，但是页是只能属于某个段的。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f4087c4a56~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crrju0cnji91a2fhv91ijb15hgb1.png-111.4kB" style="zoom:80%;" />
+
+14. 在对应的 `XDES Entry` 的 `Page State BitMap` 中，将该页对应的位标记为 1（已占用）。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a739f343654829~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1crre79uq9971bsdj9s1i0j11en8a.png-96.2kB" style="zoom:80%;" />
+
+15. 随着数据越来越多，该段已经占用了32个碎片页。
+16. 此时继续插入数据，会从`FSP_HDR`的 `FREE List`（空闲区链表）中直接申请一个完整的Extent（区）。
+17. 将该区的`XDES Entry`的 `State` 从 `FREE` 改为 `SEG_INODE`（表示现在它归属于某个段了）。
+18. 将该`XDES Entry`挂到`INODE Entry`里的 `FREE List` 链表下（注意：这里是段内部的空闲链表）。
+19. 当需要新页时，MySQL 从属于段的 `FREE List` 区里取出一个页。同时更新该区`XDES Entry`的 `Page State BitMap`。
+20. 一旦该区用了一部分页，它在`INODE Entry`里的位置就会从 `FREE List` 移到到 `NOT_FULL List`。
+21. 从申请到的区中取出一个空闲页（Page）。
+22. 为保证B+ 树平衡：将原页中的部分记录移动到新页（分裂）。修改原页的 `Next Page` 指向新页，新页的 `Prev Page` 指向原页。
+23. 在父节点（非叶子节点）中增加一个目录项，指向这个新页。如果父节点也满了，则递归向上分裂，甚至可能导致根节点分裂（树增高）。
+24. 以上所有对 `FSP_HDR`、`XDES`、`INODE` 以及数据页的修改，都会产生 Redo Log，确保即便断电，空间分配记录也不会丢失。
+
+
+
+### SELECT全流程
+
+如果使用的是独立表空间，SELECT执行的全流程：
+
+```sql
+SELECT * FROM table WHERE id = 100
+```
+
+1. 访问数据字典获取table表所在聚簇索引的根节点页号。
+2. 将根节点读到Buffer Pool
+3. 在根节点内通过 页目录（Page Directory） 二分查找，找到 `id=100` 所在的下一层子节点的页号。
+4. 重复此过程。如果是三层 B+ 树，会从根节点（Root） -> 中间节点（Internal Node） -> 叶子节点（Leaf Node）。
+5. 定位到目标叶子节点之后，通过页目录二分查找以及`next_record` 链表找到 `id=100` 的行数据。
+6. 如果是范围查询： `id > 100`，会通过 File Header 中的 `PREV PAGE` 和 `NEXT PAGE` 指针在叶子节点之间横向移动。
+
+
 
 
 
