@@ -4111,7 +4111,550 @@ SELECT * FROM table WHERE id = 100
 
 
 
+# 9. MySQL如何执行单表查询
+
+单表查询有两种执行方式：
+
+1. 使用全表扫描：把整张表（即整个聚簇索引）扫描一遍，将满足条件的记录加入结果集。
+2. 使用索引进行查询：利用索引来提升查询速率。
+
+MySQL执行查询语句的方式称为访问方法，有const、ref、range等访问方法，下面展开介绍。
 
 
 
+为便于展开介绍，创建single_table表作为示例：
 
+```sql
+CREATE TABLE single_table (
+    id INT NOT NULL AUTO_INCREMENT,
+    key1 VARCHAR(100),
+    key2 INT,
+    key3 VARCHAR(100),
+    key_part1 VARCHAR(100),
+    key_part2 VARCHAR(100),
+    key_part3 VARCHAR(100),
+    common_field VARCHAR(100),
+    PRIMARY KEY (id),
+    KEY idx_key1 (key1),
+    UNIQUE KEY idx_key2 (key2),
+    KEY idx_key3 (key3),
+    KEY idx_key_part(key_part1, key_part2, key_part3)
+) Engine=InnoDB CHARSET=utf8;
+```
+
+为这个`single_table`表建立了1个聚簇索引和4个二级索引，分别是：
+
+- 为`id`列建立的聚簇索引。
+- 为`key1`列建立的`idx_key1`二级索引。
+- 为`key2`列建立的`idx_key2`二级索引，而且该索引是唯一二级索引。
+- 为`key3`列建立的`idx_key3`二级索引。
+- 为`key_part1`、`key_part2`、`key_part3`列建立的`idx_key_part`二级索引，这也是一个联合索引。
+
+
+
+## 9.1 const
+
+是什么：通过「主键」或「唯一二级索引列」与常数的***等值比较***来定位一条记录。如果「主键」或「唯一二级索引列」是由多个列构成的话，索引中的每一个列都需要与常数进行等值比较（这是因为只有该索引中全部列都采用等值比较才可以定位唯一的一条记录）。
+
+为什么叫const：这种查询方式速度非常快，因此命名为`const`，意思是常数级别的，代价是可以忽略不计的。
+
+如果是通过「主键」与常数的等值比较定位一条记录，则仅需要通过二分查找就能在聚簇索引快速定位到目标叶子节点以及目标记录。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a7b843dec61b4e~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1ctendl4319v659s1dfoj6lssl16.png-36.4kB" style="zoom:67%;" />
+
+如果是通过「唯一二级索引列」与常数的等值比较定位一条记录，则仅需要通过二分查找就能在二级索引快速定位到目标记录，然后回表在聚簇索引也能够通过二分查找快速定位到目标记录。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a7b843e05c8e33~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1cthurrlpbhlotsjru1dsjrrl30.png-110.2kB" style="zoom:67%;" />
+
+
+
+注意：
+
+* 对唯一二级索引，查询该列为NULL值的情况比较特殊。
+
+  由于唯一二级索引列并不限制 NULL 值的数量，因此该sql语句可能定位到多条记录，则不属于const访问方法，而属于ref访问方法。
+
+  ```sql
+  SELECT * FROM single_table WHERE key2 IS NULL;
+  ```
+
+  
+
+## 9.2 ref
+
+是什么：「普通二级索引列」与常数进行***等值比较***。
+
+什么时候采用ref：由于「普通二级索引列」与常数进行等值比较，查询到的结果数量可能大于1，如果不满足索引覆盖，则需要进行回表。所以ref的效率取决于在二级索引中查询到的记录条数，如果条数越少，说明回表次数越少，效率越高。如果条数越多，说明回表次数越多，则mysql越倾向于进行全表扫描。
+
+![image_1ctf14vso11cdclsmc6ac8pru9h.png-109.5kB](/Users/yutinglai/Documents/note/MySQL-note/assets/16a7b843e5e227f1~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png)
+
+注意：
+
+* 不论是普通的二级索引，还是唯一二级索引，它们的索引列对包含NULL值的数量并不限制，所以key IS NULL这种形式的搜索条件最多只能使用ref的访问方法，而不是const的访问方法。
+
+* 对于某个包含多个索引列的二级索引来说，只要是最左边的连续索引列是与常数的等值比较就可能采用`ref`的访问方法，比方说下边这几个查询：
+
+  ```sql
+  SELECT * FROM single_table WHERE key_part1 = 'god like';
+  
+  SELECT * FROM single_table WHERE key_part1 = 'god like' AND key_part2 = 'legendary';
+  
+  SELECT * FROM single_table WHERE key_part1 = 'god like' AND key_part2 = 'legendary' AND key_part3 = 'penta kill';
+  ```
+
+  但是如果最左边的连续索引列并不全部是等值比较的话，它的访问方法就不是ref了，而是range：
+
+  ```sql
+  SELECT * FROM single_table WHERE key_part1 = 'god like' AND key_part2 > 'legendary';
+  ```
+
+
+
+## 9.3 ref_or_null
+
+是什么：通过二级索引找到二级索引列值等于某个常数值或者该二级索引列值为NULL的记录。
+
+示例：该sql语句使用的就是`ref_or_null`访问方法
+
+```sql
+SELECT * FROM single_table WHERE key1 = 'abc' OR key1 IS NULL;
+```
+
+该查询相当于先分别从`idx_key1`索引对应的`B+`树中找出`key1 IS NULL`和`key1 = 'abc'`的两个连续的记录范围，然后根据这些二级索引记录中的`id`值再回表查找完整的用户记录。
+
+<img src="/Users/yutinglai/Documents/note/MySQL-note/assets/16a7b843e8927bee~tplv-t2oaga2asx-jj-mark:3024:0:0:0:q75.png" alt="image_1ctf21uu8113m1ajm1rcitgf5eeco.png-122.5kB" style="zoom:90%;" />
+
+注意：
+
+* InnoDB中通常将 `NULL` 视为**最小的值**，因此二级索引列为 `NULL` 的记录在索引树中也是连续排列的。
+
+
+
+## 9.4 range
+
+是什么：利用索引进行范围查询。（可以是聚簇索引，也可以是二级索引）。
+
+示例：该sql语句的访问方法就属于range。其中1438、6328属于单点区间、[38，79]属于连续范围区间。
+
+```sql
+SELECT * FROM single_table WHERE key2 IN (1438, 6328) OR (key2 >= 38 AND key2 <= 79);
+```
+
+
+
+## 9.5 index
+
+是什么：在这个sql语句中，由于`key_part2`不是`idx_key_part`索引最左边的索引列，因此无法使用ref访问方法。
+
+```sql
+SELECT key_part1, key_part2, key_part3 FROM single_table WHERE key_part2 = 'abc';
+```
+
+可以观察到查询的`key_part1, key_part2, key_part3`三个列都在`idx_key_part`索引中，而且查询条件`key_part2`也在`idx_key_part`索引中。我们完全可以通过扫描`idx_key_part`索引树，找到满足条件的记录数据，而且还不需要回表。
+
+由于二级索引只需要存储索引列和主键列，而聚簇索引需要完整的用户数据数据还有隐藏列等，所以***直接遍历二级索引比直接遍历聚簇索引的成本要小很多。***
+
+这种遍历整个二级索引来查询的方式称为index。
+
+
+
+## 9.6 all
+
+全表扫描，直接扫描整个聚簇索引。
+
+
+
+## 9.7 注意
+
+### 1️⃣执行查询一般只会用一个二级索引
+
+例如这个sql语句：
+
+```sql
+SELECT * FROM single_table WHERE key1 = 'abc' AND key2 > 1000;
+```
+
+查询优化器会识别到这个查询中的两个搜索条件：
+
+- `key1 = 'abc'`
+- `key2 > 1000`
+
+优化器会根据表的统计数据，来判断使用哪一个二级索引需要扫描的数据条数更少。一般来说等值查询需要扫描的数据条数更少，但也不一定，因为有可能`key1 = 'abc'`的记录特别多。
+
+假设这里使用了`idx_key1`这个二级索引，查询到所有满足`key1 = 'abc'`的记录之后，需要根据主键回表查询完整的用户记录，然后再根据其余的`WHERE`条件即`key2 > 1000`过滤记录。
+
+
+
+### 2️⃣复杂搜索条件怎么简化
+
+例如这个sql语句，如何分析应该使用哪个索引？ 
+
+```sql
+SELECT * FROM single_table WHERE 
+        (key1 > 'xyz' AND key2 = 748 ) OR
+        (key1 < 'abc' AND key1 > 'lmn') OR
+        (key1 LIKE '%suf' AND key1 > 'zzz' AND (key2 < 8000 OR common_field = 'abc')) ;
+```
+
+分析策略：
+
+1. 首先查看`WHERE`子句中的搜索条件都涉及到了哪些列，哪些列可能使用到索引。
+
+   这个查询的搜索条件涉及到了`key1`、`key2`、`common_field`这3个列。
+
+   `key1`列有普通的二级索引`idx_key1`，`key2`列有唯一二级索引`idx_key2`。
+
+2. 对于那些可能用到的索引，分析它们的范围区间。
+
+   * 假设使用`idx_key1`索引进行查询
+
+     * 将用不到该索引的搜索条件暂时移除掉 ➡️ 用TRUE替代这些搜索条件
+
+       > 之所以把用不到索引的搜索条件替换为TRUE，是因为我们不打算使用这些条件进行在该索引上进行过滤，所以不管索引的记录满不满足这些条件，我们都把它们选取出来，待到之后回表的时候再使用它们过滤。
+
+       由于`key2`、`common_field`用不到该索引，且`key1 LIKE '%suf'`也用不到该索引，则上面的sql语句变为：
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (key1 > 'xyz' AND TRUE ) OR
+               (key1 < 'abc' AND key1 > 'lmn') OR
+               (TRUE AND key1 > 'zzz' AND (TRUE OR TRUE)) ;
+       ```
+
+       简化之后即为：
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (key1 > 'xyz') OR
+               (key1 < 'abc' AND key1 > 'lmn') OR
+               (key1 > 'zzz') ;
+       ```
+
+     * 将永远为TRUE/FALSE的条件给替换掉
+
+       由于`key1 < 'abc' AND key1 > 'lmn'`永远为FALSE，则上面的sql等价于
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (key1 > 'xyz') OR
+               FALSE OR
+               (key1 > 'zzz') ;
+       ```
+
+       等价于
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (key1 > 'xyz') OR (key1 > 'zzz') ;
+       ```
+
+       `(key1 > 'xyz') OR (key1 > 'zzz')`取并集，等价于
+
+       ```sql
+       SELECT * FROM single_table WHERE key1 > 'xyz';
+       ```
+
+     所以，如果使用`idx_key1`索引进行查询，则需要先从二级索引查询到所有满足`key1 > 'xyz'`的记录，然后再回表找到完整用户记录，最后再根据其余查询条件过滤。
+
+   * 假设使用`idx_key2`索引进行查询
+
+     ```sql
+     SELECT * FROM single_table WHERE 
+             (key1 > 'xyz' AND key2 = 748 ) OR
+             (key1 < 'abc' AND key1 > 'lmn') OR
+             (key1 LIKE '%suf' AND key1 > 'zzz' AND (key2 < 8000 OR common_field = 'abc')) ;
+     ```
+
+     * 将用不到该索引的搜索条件暂时移除掉 ➡️ 用TRUE替代这些搜索条件
+
+       由于该索引用不到key1、common_field字段，因此上面的sql语句等同于
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (TRUE AND key2 = 748 ) OR
+               (TRUE AND TRUE) OR
+               (TRUE AND TRUE AND (key2 < 8000 OR TRUE)) ;
+       ```
+
+       等同于
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (key2 = 748 ) OR
+               (key2 < 8000 OR TRUE) ;
+       ```
+
+       等同于
+
+       ```sql
+       SELECT * FROM single_table WHERE 
+               (key2 = 748 ) OR (TRUE) ;
+       ```
+
+       等同于
+
+       ```sql
+       SELECT * FROM single_table WHERE TRUE ;
+       ```
+
+       因此，如果我们使用`idx_key2`索引进行查询，需要扫描`idx_key2`二级索引的所有记录，然后对所有记录都要回表。没有任何优化效果，这种情况下优化器不会选择使用`idx_key2`索引。
+
+     
+
+### 3️⃣索引合并
+
+使用多个索引来完成一次查询被称为index merge（索引合并）。
+
+索引合并算法有三种：
+
+* Intersaction合并。
+* Union合并。
+* Sort-Union合并。
+
+
+
+#### Intersaction合并
+
+**是什么：**
+
+Intersaction指的是取交集
+
+```sql
+SELECT * FROM single_table WHERE key1 = 'a' AND key3 = 'b';
+```
+
+上面这个sql语句如果使用Intersaction合并，执行流程为：
+
+1. 根据`idx_key1`索引查询所有满足`key1 = 'a'`的记录。
+2. 根据`idx_key3`索引查询所有满足`key3 = 'b'`的记录。
+3. 由于两个二级索引查询到的都是id和索引列值，则对1、2步的查询得到的记录的id值取交集。
+4. 对于交集中的id再回表查询完整记录。
+
+
+
+**为什么：**
+
+为什么要用两个二级索引分别查询，得到的交集再回表？而不是用一个二级索引查，回表查询到完整记录，再根据剩余查询条件来过滤？
+
+分别分析两种方式所需的成本：
+
+只读一个二级索引的成本：
+
+* 根据某个查询条件搜索一个二级索引
+* 根据得到的主键值回表，然后再过滤其他搜索条件（*注意，这里的情况不满足索引覆盖，所以必须回表之后才能过滤剩余条件*）
+
+读多个二级索引：
+
+* 根据不同的查询条件搜索不同的二级索引
+* 取查询结果的id交集，在回表查完整记录
+
+如果说只读一个二级索引需要回表次数非常多，而读多个二级索引得到的查询结果交集记录数特别少，则使用Intersaction合并效率会更高。因为虽然需要读多个二级索引，但是读二级索引本身是顺序I/O，效率就很高，而回表是随机I/O，效率低。当回表造成的性能损耗比访问多个二级索引造成的性能损耗更多时，使用Intersaction合并比只读一个二级索引的方案更优。
+
+
+
+**什么时候会使用Intersaction合并：**
+
+当SQL语句对二级索引***都是等值匹配***的时候，则可能会使用`Intersection`索引合并。
+
+例如：对于这个SQL语句，可能用到`idx_key1`和`idx_key_part`这两个二级索引的`Intersection`索引合并操作。
+
+```sql
+SELECT * FROM single_table WHERE key1 = 'a' AND key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c';
+```
+
+因为对于`idx_key1`二级索引，是等值匹配（`key1 = 'a'`）。
+
+对`idx_key_part`二级索引，也是等值匹配（`key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c'`）。
+
+下面这个SQL语句就无法使用索引合并操作。
+
+```sql
+SELECT * FROM single_table WHERE key1 > 'a' AND key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c';
+
+SELECT * FROM single_table WHERE key1 = 'a' AND key_part1 = 'a';
+```
+
+对于第一个SQL语句来说，`idx_key1`是范围匹配；
+
+对于第二个SQL语句来说，`idx_key_part`不是等值匹配；
+
+为什么必须要是等值匹配才可能使用Intersaction合并？
+
+因为二级索引会在叶子节点存储索引列+主键值，排序方式是按照索引列排序，当索引列相同的时候，再按照主键列排序。
+
+所以当使用二级索引的时候，等值匹配能够保证搜索的结果是主键列有序的，当多个二级索引搜索结果的主键列都是有序的时候，找主键的交集的效率就非常高，时间复杂度为O(N)。
+
+例如下面两个二级索引根据等值查询查询到的结果的主键值为：
+
+- 从`idx_key1`中获取到已经排好序的主键值：1、3、5
+- 从`idx_key2`中获取到已经排好序的主键值：2、3、4
+
+查询交集的方式为：
+
+1. 两个指针p、q分别指向最小值
+2. p.val == q.val 则找到一个交集元素，加入集合
+3. p.val != q.val 则右移值更小的指针
+4. 重复该过程，当p\==null || q==null，就找完了交集中的所有元素。
+
+
+
+以下面这个例子演示整个找交集的过程：
+
+- 从`idx_key1`中获取到已经排好序的主键值：1、3、5
+- 从`idx_key2`中获取到已经排好序的主键值：2、3、4
+
+1. p指向`idx_key1`查询到的记录的最小主键值1，q指向`idx_key2`查询到的记录的最小主键值2。
+2. 1 != 2 && 1 < 2 --> p右移 p.val=3 q.val=2
+3. 3 != 2 && 3 > 2 --> q右移 p.val=3 q.val=3 加入交集
+4. p.val=3 q.val=3 加入交集 --> p右移 q右移 p.val=5 q.val=4
+5. 5 != 4 && 5 > 4 --> q右移 q==null 结束
+
+
+
+为什么要这样找交集，用集合set不是也能通过O(N)的时间复杂度实现吗，而且还不需要主键值有序？
+
+虽然时间复杂度也是O(N)，但是上面的方案空间复杂度为O(1)，而Set的方案空间复杂度为O(n)。
+
+
+
+如果不要求等值匹配，例如使用范围匹配
+
+```sql
+SELECT * FROM single_table WHERE key1 > 'a' AND key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c';
+```
+
+使用`idx_key1`二级索引查询到的记录的主键列不一定是有序的，则需要先根据主键值排序，再找交集，效率更低。
+
+
+
+==注意：这只是可能会发生Intersaction合并的情况，但并不一定会发生。**只有当多个索引的扫描代价之和，明显小于扫描单个索引时，MySQL 才会考虑合并。**==
+
+
+
+#### Union合并
+
+**是什么：**
+
+和Intersaction合并类似，Intersaction是取交集，Union是取并集。
+
+Intersaction处理的是AND的关系，Union处理的是OR的关系。
+
+例如这个SQL语句，可以通过Union合并，将`idx_key1`和`idx_key3`二级索引查询到的结果的主键值取并集再回表查询。
+
+```sql
+SELECT * FROM single_table WHERE key1 = 'a' OR key3 = 'b'
+```
+
+
+
+**为什么：**
+
+为什么要用两个二级索引分别查询，得到的并集再回表？而不是直接进行全表扫描？
+
+分别分析两种方式所需的成本：
+
+全表扫描所需要的成本：
+
+* 需要扫描整个聚簇索引，一一对比每个记录是否满足`key1 = 'a' OR key3 = 'b'`。
+
+读多个二级索引：
+
+* 需要扫描`idx_key1`找到所有满足`key1 = 'a'`的记录
+* 需要扫描`idx_key2`找到所有满足`key3 = 'b'`的记录
+
+* 找到所有主键的并集，再回表查询完整的记录信息
+
+
+
+虽然Union合并需要读多个二级索引，但是如果通过二级索引扫描得到的并集中记录数很少，则效率会比全表扫描高得多。
+
+
+
+**什么时候会使用Union合并：**
+
+* 二级索引列都是等值匹配
+
+  例如下面这个sql语句就可以使用Union合并
+
+  ```sql
+  SELECT * FROM single_table WHERE key1 = 'a' OR ( key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c');
+  ```
+
+  下面这两个sql语句就不能用Union合并
+
+  ```sql
+  # key1不是等值匹配
+  SELECT * FROM single_table WHERE key1 > 'a' OR (key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c');
+  
+  # 联合索引idx_key_part中的key_part2和key_part3列并没有出现在搜索条件中
+  SELECT * FROM single_table WHERE key1 = 'a' OR key_part1 = 'a';
+  ```
+
+  原因和Intersaction合并讨论的一致：当等值匹配的时候才能够保证二级索引搜索到的记录的主键值是有序的，找并集的效率才会高。
+
+* 使用`Intersection`索引合并的搜索条件
+
+  ```sql
+  SELECT * FROM single_table WHERE 
+  key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c' 
+  OR (key1 = 'a' AND key3 = 'b');
+  ```
+
+  * 先按照`key1 = 'a' AND key3 = 'b'`搜索条件通过`Intersection`索引合并得到一个主键集合
+  * 再通过`idx_key_part`二级索引搜索`key_part1 = 'a' AND key_part2 = 'b' AND key_part3 = 'c' `得到一个主键集合
+  * 由于两个主键集合都是有序的，因此取并集效率也非常高。
+
+
+
+==注意：这只是**可能**会发生Union合并的情况，但并不一定会发生。**只有当扫描多个索引产生的性能消耗小于全表扫描的性能消耗，优化器才会考虑使用Union合并。**==
+
+
+
+#### Sort Union合并
+
+Union合并的要求很高，只允许在等值匹配的时候才允许进行Union合并。
+
+对于下面这个sql语句就不允许了，之所以不允许，是因为通过`idx_key1`索引搜索`key1 < 'a'`条件得到的结果主键值不一定是有序的。对于`key3 > 'z'`条件也是同理。
+
+```sql
+SELECT * FROM single_table WHERE key1 < 'a' OR key3 > 'z'
+```
+
+为啥怕排序呢，就是因为如果记录条数很多的时候，排序的性能消耗比较大。
+
+如果说我们通过二级索引查询到的记录的条数比较少，那对它进行主键排序关系也不大，这样的话主键有序，后续流程就和Union完全一样了。
+
+这种通过多个二级索引查询到记录，然后对这些记录进行排序，再求并集的方式，就称为Sort Union。
+
+
+
+> 为什么有Sort Union而没有Sort Intersaction？
+>
+> 思考一下什么时候会用Union什么时候会用Intersaction：
+>
+> Union：处理OR关系。当通过多个二级索引查询到的记录数很少，并集结果也很少，回表代价不大（至少比全表扫描代价小）的时候，才会用Union。
+>
+> Intersaction：处理AND关系。当仅通过一个二级索引查询到的记录很少，直接用一个二级索引查询然后回表再过滤剩余查询条件也很高效，这种情况不会用Intersaction Union。只有当仅通过一个二级索引查询到的记录很多，回表频率高的场景下，通过多个二级索引取交集的方式才有意义（减少回表次数），才会使用Intersaction合并。
+>
+> 因此Intersaction合并本身就只有在二级索引查询到记录数量很多的场景下才会使用，这种情况下如果还要进行Sort，效率并不高，因此没有Sort Intersaction。
+>
+> 而Union本身就是在通过二级索引扫描到的记录数量比较少的时候才会使用，Sort对效率影响也不高，所以有Sort Union。
+>
+> 
+>
+> 为什么 MySQL 只有 Sort-Union 而没有 Sort-Intersection？
+>
+> 在 MySQL 的索引合并（Index Merge）策略中，算法的选择本质上是在**“排序/合并的 CPU 消耗”**与**“回表的 I/O 消耗”**之间做权衡。
+>
+> 1. Union：处理OR关系。
+>
+> - **什么时候会用Union合并：** `OR` 查询通常用于处理多个独立条件。只有当每个条件筛选出的记录数都**较少**时，合并后的并集依然较小，此时回表的次数比较少，优化器才会选择Union合并而不是全表扫描。
+> - **排序的意义：** 既然单次查询结果集小，对其主键值进行Sort的 CPU 开销就很低。 因此Sort Union在小数据量场景下性价比极高。
+>
+> 2. Intersection：处理AND关系。
+>
+> - **什么时候会用Intersection合并：** `AND` 查询只有在**“单索引过滤效果差（返回记录多），但多索引交集过滤效果好”**的极端场景下，才有必要使用 Intersection。
+> - **矛盾点：**
+>   - 如果单索引返回记录少，直接回表过滤即可，无需 Intersection。
+>   - 如果单索引返回记录**很多**（万级以上），此时进行 **Sort（排序）** 操作的 CPU 和内存开销将变得不可接受。
+> - **结论：** Intersection 只有在数据量大时才有意义，而大数据量下排序太慢。因此，MySQL 只支持 **Simple Intersection**（要求索引本身就是有序的，直接双指针扫描），而放弃了开发性价比极低的 Sort-Intersection。
